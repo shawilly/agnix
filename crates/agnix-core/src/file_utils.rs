@@ -1,19 +1,18 @@
-//! Safe file reading utilities
+//! Safe file I/O utilities
 //!
-//! Provides hardened file reading with symlink rejection, regular file checks,
-//! and size limits to prevent security issues and resource exhaustion.
+//! Provides hardened file reading and writing with regular file checks and
+//! size limits to prevent security issues and resource exhaustion.
 //!
 //! ## Security Model
 //!
-//! This module uses `symlink_metadata()` to check file properties without
-//! following symlinks. It then verifies the file is a regular file (not a
-//! directory, FIFO, socket, or device) before reading.
+//! **Reads** follow symlinks via `fs::metadata()`. The resolved target is
+//! still checked for: regular file, size limit. Following symlinks is safe
+//! for a read-only linter - the worst case is reading unexpected content,
+//! and symlinked instruction files (e.g. `GEMINI.md -> AGENTS.md`) are a
+//! common pattern in real repositories.
 //!
-//! Note: There is an inherent TOCTOU (time-of-check-time-of-use) window
-//! between the metadata check and the read. This is acceptable for a linter
-//! because: (1) the attack requires local filesystem access, (2) the impact
-//! is limited to reading unexpected content, and (3) eliminating TOCTOU
-//! entirely would require platform-specific APIs (O_NOFOLLOW, etc.).
+//! **Writes** reject symlinks via `fs::symlink_metadata()` to prevent
+//! symlink attacks that could overwrite arbitrary files during autofix.
 
 use crate::diagnostics::{CoreError, FileError, LintResult};
 use std::fs;
@@ -37,16 +36,15 @@ pub const DEFAULT_MAX_FILE_SIZE: u64 = 1_048_576;
 /// Safely read a file with security checks.
 ///
 /// This function:
-/// 1. Rejects symlinks (uses `symlink_metadata` to detect without following)
+/// 1. Follows symlinks to the resolved target
 /// 2. Rejects non-regular files (directories, FIFOs, sockets, devices)
 /// 3. Enforces a maximum file size limit (files at exactly the limit are accepted)
 ///
 /// # Errors
 ///
-/// Returns `CoreError::File(FileError::Symlink)` if the path is a symlink.
-/// Returns `CoreError::File(FileError::NotRegular)` if the path is not a regular file.
+/// Returns `CoreError::File(FileError::NotRegular)` if the resolved path is not a regular file.
 /// Returns `CoreError::File(FileError::TooBig)` if the file exceeds the size limit.
-/// Returns `CoreError::File(FileError::Read)` for other I/O errors.
+/// Returns `CoreError::File(FileError::Read)` for other I/O errors (including dangling symlinks).
 pub fn safe_read_file(path: &Path) -> LintResult<String> {
     safe_read_file_with_limit(path, DEFAULT_MAX_FILE_SIZE)
 }
@@ -187,21 +185,15 @@ pub fn safe_write_file(path: &Path, content: &str) -> LintResult<()> {
 /// The size limit uses `>` comparison, so files at exactly `max_size` bytes
 /// are accepted, while files larger than `max_size` are rejected.
 pub fn safe_read_file_with_limit(path: &Path, max_size: u64) -> LintResult<String> {
-    // Use symlink_metadata to get metadata WITHOUT following symlinks
-    // This is the key difference from fs::metadata() which follows symlinks
-    let metadata = fs::symlink_metadata(path).map_err(|e| {
+    // Use fs::metadata() which follows symlinks to the resolved target.
+    // This allows reading symlinked instruction files (e.g. GEMINI.md -> AGENTS.md).
+    // Dangling symlinks will produce an I/O error here, which is the correct behavior.
+    let metadata = fs::metadata(path).map_err(|e| {
         CoreError::File(FileError::Read {
             path: path.to_path_buf(),
             source: e,
         })
     })?;
-
-    // Reject symlinks for security (prevents path traversal)
-    if metadata.file_type().is_symlink() {
-        return Err(CoreError::File(FileError::Symlink {
-            path: path.to_path_buf(),
-        }));
-    }
 
     // Reject non-regular files (prevents hangs on FIFOs, reads from devices)
     if !metadata.is_file() {
@@ -220,7 +212,7 @@ pub fn safe_read_file_with_limit(path: &Path, max_size: u64) -> LintResult<Strin
         }));
     }
 
-    // Read the file
+    // Read the file (follows symlinks automatically)
     fs::read_to_string(path).map_err(|e| {
         CoreError::File(FileError::Read {
             path: path.to_path_buf(),
@@ -440,7 +432,7 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         #[test]
-        fn test_symlink_rejected() {
+        fn test_symlink_followed_for_reads() {
             let temp = TempDir::new().unwrap();
             let target_path = temp.path().join("target.md");
             let link_path = temp.path().join("link.md");
@@ -449,18 +441,12 @@ mod tests {
             symlink(&target_path, &link_path).unwrap();
 
             let result = safe_read_file(&link_path);
-            assert!(result.is_err());
-
-            match result.unwrap_err() {
-                CoreError::File(FileError::Symlink { path }) => {
-                    assert_eq!(path, link_path);
-                }
-                other => panic!("Expected FileSymlink error, got {:?}", other),
-            }
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "Target content");
         }
 
         #[test]
-        fn test_symlink_to_directory_rejected() {
+        fn test_symlink_to_directory_still_rejected() {
             let temp = TempDir::new().unwrap();
             let dir_path = temp.path().join("subdir");
             let link_path = temp.path().join("link_to_dir");
@@ -472,24 +458,23 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                CoreError::File(FileError::Symlink { .. })
+                CoreError::File(FileError::NotRegular { .. })
             ));
         }
 
         #[test]
-        fn test_dangling_symlink_rejected() {
+        fn test_dangling_symlink_returns_read_error() {
             let temp = TempDir::new().unwrap();
             let link_path = temp.path().join("dangling.md");
 
-            // Create symlink to non-existent target
             symlink("/nonexistent/target", &link_path).unwrap();
 
             let result = safe_read_file(&link_path);
             assert!(result.is_err());
-            // Dangling symlink is still a symlink
+            // Dangling symlink produces an I/O error (target not found)
             assert!(matches!(
                 result.unwrap_err(),
-                CoreError::File(FileError::Symlink { .. })
+                CoreError::File(FileError::Read { .. })
             ));
         }
 
@@ -509,6 +494,22 @@ mod tests {
                 CoreError::File(FileError::Symlink { .. })
             ));
         }
+
+        #[test]
+        fn test_symlink_chain_followed() {
+            let temp = TempDir::new().unwrap();
+            let target = temp.path().join("real.md");
+            let link_a = temp.path().join("link_a.md");
+            let link_b = temp.path().join("link_b.md");
+
+            fs::write(&target, "Chained content").unwrap();
+            symlink(&target, &link_a).unwrap();
+            symlink(&link_a, &link_b).unwrap();
+
+            let result = safe_read_file(&link_b);
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "Chained content");
+        }
     }
 
     // Windows symlink tests - require elevated privileges or developer mode
@@ -518,7 +519,7 @@ mod tests {
         use std::os::windows::fs::symlink_file;
 
         #[test]
-        fn test_symlink_rejected_windows() {
+        fn test_symlink_followed_for_reads_windows() {
             let temp = TempDir::new().unwrap();
             let target_path = temp.path().join("target.md");
             let link_path = temp.path().join("link.md");
@@ -528,47 +529,9 @@ mod tests {
             // Try to create symlink - may fail without privileges
             if symlink_file(&target_path, &link_path).is_ok() {
                 let result = safe_read_file(&link_path);
-                assert!(result.is_err());
-                assert!(matches!(
-                    result.unwrap_err(),
-                    CoreError::File(FileError::Symlink { .. })
-                ));
+                assert!(result.is_ok());
+                assert_eq!(result.unwrap(), "Target content");
             }
-            // If symlink creation fails due to privileges, skip the test
         }
-    }
-
-    // ===== TOCTOU Race Condition Tests =====
-
-    #[cfg(unix)]
-    #[test]
-    fn test_symlink_race_window_documented() {
-        // This test documents the TOCTOU (time-of-check-time-of-use) race condition
-        // between symlink_metadata check and read operation in safe_read_file.
-        //
-        // An attacker with local filesystem access could theoretically replace a
-        // regular file with a symlink between the check and read. This is acceptable
-        // for a linter because:
-        // 1. The attack requires local filesystem access
-        // 2. The impact is limited to reading unexpected content
-        // 3. Eliminating TOCTOU entirely would require platform-specific APIs
-        //    (O_NOFOLLOW on Unix, FILE_FLAG_OPEN_REPARSE_POINT on Windows)
-        //
-        // This test verifies that symlinks are rejected by the initial check.
-        use std::os::unix::fs::symlink;
-        let temp = TempDir::new().unwrap();
-        let target_path = temp.path().join("target.md");
-        let link_path = temp.path().join("link.md");
-
-        fs::write(&target_path, "Target content").unwrap();
-        symlink(&target_path, &link_path).unwrap();
-
-        // Verify symlink is rejected at check time
-        let result = safe_read_file(&link_path);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            CoreError::File(FileError::Symlink { .. })
-        ));
     }
 }
