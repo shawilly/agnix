@@ -429,9 +429,21 @@ impl FileSystem for MockFileSystem {
             MockEntry::Directory => Err(CoreError::File(FileError::NotRegular {
                 path: path.to_path_buf(),
             })),
-            MockEntry::Symlink { .. } => Err(CoreError::File(FileError::Symlink {
-                path: path.to_path_buf(),
-            })),
+            MockEntry::Symlink { target } => {
+                // Follow symlink to target (mirrors real fs::metadata behavior)
+                let target_entry = entries.get(target).ok_or_else(|| {
+                    CoreError::File(FileError::Read {
+                        path: path.to_path_buf(),
+                        source: io::Error::new(io::ErrorKind::NotFound, "symlink target not found"),
+                    })
+                })?;
+                match target_entry {
+                    MockEntry::File { content } => Ok(content.clone()),
+                    _ => Err(CoreError::File(FileError::NotRegular {
+                        path: path.to_path_buf(),
+                    })),
+                }
+            }
         }
     }
 
@@ -639,16 +651,14 @@ mod tests {
     }
 
     #[test]
-    fn test_mock_fs_read_symlink_fails() {
+    fn test_mock_fs_read_symlink_follows_target() {
         let fs = MockFileSystem::new();
         fs.add_file("/test/file.txt", "content");
         fs.add_symlink("/test/link.txt", "/test/file.txt");
 
         let result = fs.read_to_string(Path::new("/test/link.txt"));
-        assert!(matches!(
-            result,
-            Err(CoreError::File(FileError::Symlink { .. }))
-        ));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "content");
     }
 
     #[test]
@@ -941,7 +951,7 @@ mod tests {
         use tempfile::TempDir;
 
         #[test]
-        fn test_real_fs_rejects_symlink_read() {
+        fn test_real_fs_follows_symlink_read() {
             let temp = TempDir::new().unwrap();
             let target = temp.path().join("target.txt");
             let link = temp.path().join("link.txt");
@@ -952,11 +962,8 @@ mod tests {
             let fs = RealFileSystem;
             let result = fs.read_to_string(&link);
 
-            assert!(result.is_err());
-            assert!(matches!(
-                result.unwrap_err(),
-                CoreError::File(FileError::Symlink { .. })
-            ));
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "content");
         }
 
         #[test]
@@ -990,11 +997,11 @@ mod tests {
             let fs = RealFileSystem;
             let result = fs.read_to_string(&link);
 
-            // Should reject as symlink (caught before we try to read nonexistent target)
+            // Dangling symlinks produce a read error (target not found)
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                CoreError::File(FileError::Symlink { .. })
+                CoreError::File(FileError::Read { .. })
             ));
         }
 
