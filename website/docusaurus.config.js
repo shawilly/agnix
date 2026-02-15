@@ -14,7 +14,12 @@ const config = {
   projectName: 'agnix',
 
   onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'throw',
+
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'throw',
+    },
+  },
 
   i18n: {
     defaultLocale: 'en',
