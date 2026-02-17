@@ -786,10 +786,10 @@ pub fn validate_project_with_registry(
                     let file_type =
                         resolve_with_compiled(&file_path, Some(&root_path), &compiled_files);
                     if file_type != FileType::Unknown {
-                        let count = files_checked.fetch_add(1, Ordering::SeqCst);
+                        let count = files_checked.fetch_add(1, Ordering::SeqCst) + 1;
                         // Security: Enforce file count limit to prevent DoS
                         if let Some(limit) = max_files {
-                            if count >= limit {
+                            if count > limit {
                                 limit_exceeded.store(true, Ordering::SeqCst);
                                 return (diags, agents, instructions);
                             }
@@ -872,8 +872,8 @@ pub fn validate_project_with_registry(
     // Extract final count from atomic counter
     let files_checked = files_checked.load(Ordering::Relaxed);
 
-    let elapsed_ms_u128 = validation_start.elapsed().as_millis();
-    let elapsed_ms = std::cmp::min(elapsed_ms_u128, u64::MAX as u128) as u64;
+    // as_millis() returns u128; clamp to u64 for the public API contract.
+    let elapsed_ms = validation_start.elapsed().as_millis().min(u64::MAX as u128) as u64;
     let validator_factories_registered = registry.total_factory_count();
 
     Ok(ValidationResult::new(diagnostics, files_checked)

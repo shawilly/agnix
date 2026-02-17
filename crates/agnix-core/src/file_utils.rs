@@ -202,7 +202,9 @@ pub fn safe_read_file_with_limit(path: &Path, max_size: u64) -> LintResult<Strin
         }));
     }
 
-    // Check file size (prevents DoS via large files)
+    // Check file size (prevents DoS via large files).
+    // Files at exactly max_size bytes are accepted; only files strictly
+    // exceeding the limit are rejected.
     let size = metadata.len();
     if size > max_size {
         return Err(CoreError::File(FileError::TooBig {

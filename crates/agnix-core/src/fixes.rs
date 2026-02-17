@@ -226,7 +226,12 @@ fn should_apply_by_mode(fix: &Fix, mode: FixApplyMode) -> bool {
 }
 
 fn resolve_dependency_candidates(mut fixes: Vec<&Fix>) -> Vec<&Fix> {
-    let max_iterations = fixes.len().saturating_add(1);
+    // Cap iterations to the number of fixes with dependencies (+1 for convergence
+    // check). This matches the algorithm's actual termination condition better
+    // than total fix count, and avoids wasted iterations for large fix sets
+    // with shallow dependency chains.
+    let deps_count = fixes.iter().filter(|f| f.depends_on.is_some()).count();
+    let max_iterations = deps_count.saturating_add(1);
     for _ in 0..max_iterations {
         let groups: HashSet<&str> = fixes.iter().filter_map(|f| f.group.as_deref()).collect();
         let descriptions: HashSet<&str> = fixes.iter().map(|f| f.description.as_str()).collect();
