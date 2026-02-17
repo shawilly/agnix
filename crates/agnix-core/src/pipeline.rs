@@ -43,7 +43,9 @@ pub struct ValidationResult {
     pub files_checked: usize,
     /// Wall-clock time spent in validation, in milliseconds.
     pub validation_time_ms: Option<u64>,
-    /// Number of validator factories registered in the registry (not the count of validators executed).
+    /// Number of validator instances registered in the registry (not the count of validators executed).
+    /// The field name uses "factories" for backward compatibility; since v0.12.2 this counts
+    /// pre-built cached instances rather than factory invocations.
     pub validator_factories_registered: usize,
 }
 
@@ -198,7 +200,14 @@ pub fn resolve_file_type(path: &Path, config: &LintConfig) -> FileType {
     resolve_with_compiled(path, config.root_dir().map(|p| p.as_path()), &compiled)
 }
 
-/// Validate a single file
+/// Validate a single file.
+///
+/// Note: This function creates a new [`ValidatorRegistry`] on every call. For
+/// bulk validation of multiple files, use
+/// [`validate_file_with_registry()`] with a pre-built shared registry for
+/// significantly better performance. Unlike [`validate_file_with_registry()`],
+/// this function applies `config.rules().disabled_validators` to the
+/// freshly-created registry at construction time.
 #[cfg(feature = "filesystem")]
 pub fn validate_file(path: &Path, config: &LintConfig) -> LintResult<Vec<Diagnostic>> {
     let mut registry = ValidatorRegistry::with_defaults();
@@ -208,7 +217,14 @@ pub fn validate_file(path: &Path, config: &LintConfig) -> LintResult<Vec<Diagnos
     validate_file_with_registry(path, config, &registry)
 }
 
-/// Validate a single file with a custom validator registry
+/// Validate a single file with a custom validator registry.
+///
+/// Note: `config.rules().disabled_validators` is NOT applied at runtime in
+/// this path. Callers must disable validators at registry construction time
+/// using [`ValidatorRegistry::disable_validator_owned()`] or the builder
+/// API. For the LSP path where the config changes frequently, use
+/// [`validate_content()`] which applies `disabled_validators` checks at
+/// runtime.
 #[cfg(feature = "filesystem")]
 pub fn validate_file_with_registry(
     path: &Path,
@@ -269,8 +285,16 @@ pub fn validate_content(
     let disabled = &config.rules().disabled_validators;
     let mut diagnostics = Vec::new();
 
+    // Runtime disabled_validators check is intentionally preserved here even
+    // though the registry now filters disabled validators at registration time.
+    // The LSP creates a single shared registry via with_defaults() (without
+    // applying config-level disables) and relies on this check to honour
+    // per-workspace disabled_validators from the user's LintConfig.
+    // Convert to HashSet for O(1) per-validator lookup instead of O(n) scan.
+    let disabled_set: std::collections::HashSet<&str> =
+        disabled.iter().map(|s| s.as_str()).collect();
     for validator in validators {
-        if disabled.iter().any(|name| name == validator.name()) {
+        if !disabled_set.is_empty() && disabled_set.contains(validator.name()) {
             continue;
         }
         diagnostics.extend(validator.validate(path, content, config));
@@ -884,7 +908,7 @@ pub fn validate_project_with_registry(
 
     // as_millis() returns u128; clamp to u64 for the public API contract.
     let elapsed_ms = validation_start.elapsed().as_millis().min(u64::MAX as u128) as u64;
-    let validator_factories_registered = registry.total_factory_count();
+    let validator_factories_registered = registry.total_validator_count();
 
     Ok(ValidationResult::new(diagnostics, files_checked)
         .with_timing(elapsed_ms)

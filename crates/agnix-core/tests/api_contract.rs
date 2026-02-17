@@ -593,8 +593,9 @@ fn validator_registry_methods() {
     let empty = agnix_core::ValidatorRegistry::new();
     let defaults = agnix_core::ValidatorRegistry::with_defaults();
 
-    // validators_for returns Vec<Box<dyn Validator>>
+    // validators_for returns &[Box<dyn Validator>] - lock in return type at call site
     let empty_validators = empty.validators_for(agnix_core::FileType::Skill);
+    let _: &[Box<dyn agnix_core::Validator>] = empty_validators;
     assert!(empty_validators.is_empty());
 
     let default_validators = defaults.validators_for(agnix_core::FileType::Skill);
@@ -607,9 +608,9 @@ fn validator_registry_methods() {
         agnix_core::ValidatorFactory,
     ) = agnix_core::ValidatorRegistry::register;
 
-    // total_factory_count()
-    assert_eq!(empty.total_factory_count(), 0);
-    assert!(defaults.total_factory_count() > 0);
+    // total_validator_count()
+    assert_eq!(empty.total_validator_count(), 0);
+    assert!(defaults.total_validator_count() > 0);
 
     // disable_validator() and disabled_validator_count()
     let mut registry = agnix_core::ValidatorRegistry::with_defaults();
@@ -627,6 +628,17 @@ fn validator_registry_methods() {
     let _builder_registry = agnix_core::ValidatorRegistry::builder()
         .with_defaults()
         .build();
+}
+
+#[test]
+#[allow(deprecated)]
+fn total_factory_count_deprecated_alias_still_works() {
+    let registry = agnix_core::ValidatorRegistry::with_defaults();
+    // Deprecated alias must still compile and return the same value
+    assert_eq!(
+        registry.total_factory_count(),
+        registry.total_validator_count(),
+    );
 }
 
 // ============================================================================
@@ -668,8 +680,8 @@ fn builder_built_registry_matches_with_defaults_factory_count() {
     let via_direct = agnix_core::ValidatorRegistry::with_defaults();
 
     assert_eq!(
-        via_builder.total_factory_count(),
-        via_direct.total_factory_count(),
+        via_builder.total_validator_count(),
+        via_direct.total_validator_count(),
     );
 }
 

@@ -401,7 +401,7 @@ fn builder_usable_from_outside_crate() {
         .build();
 
     // Verify the builder produced a valid registry
-    assert!(registry.total_factory_count() > 0);
+    assert!(registry.total_validator_count() > 0);
     assert_eq!(registry.disabled_validator_count(), 1);
 
     // XmlValidator should be excluded from Skill validators
@@ -434,8 +434,8 @@ fn custom_provider_from_outside_crate() {
     // Should match default count (empty provider adds nothing)
     let defaults = agnix_core::ValidatorRegistry::with_defaults();
     assert_eq!(
-        registry.total_factory_count(),
-        defaults.total_factory_count()
+        registry.total_validator_count(),
+        defaults.total_validator_count()
     );
 }
 
@@ -453,7 +453,7 @@ fn validator_name_accessible_from_outside_crate() {
     let registry = agnix_core::ValidatorRegistry::with_defaults();
     let validators = registry.validators_for(agnix_core::FileType::Skill);
 
-    for v in &validators {
+    for v in validators {
         let name = v.name();
         assert!(!name.is_empty());
         assert!(name.is_ascii());
