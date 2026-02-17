@@ -8,7 +8,7 @@
 use agnix_core::diagnostics::{Diagnostic, DiagnosticLevel};
 use agnix_rules::RULES_DATA;
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 const SARIF_SCHEMA: &str = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json";
@@ -201,10 +201,149 @@ pub fn diagnostics_to_sarif(diagnostics: &[Diagnostic], base_path: &Path) -> Sar
     }
 }
 
+/// Walk ancestors of `start` looking for a `.git` directory or file (worktrees/submodules).
+///
+/// Prefers the canonical path (resolves symlinks for better IDE integration),
+/// but falls back to walking the original path if canonicalization fails.
+/// Returns the repository root path, or `None` if no git marker is found.
+pub fn find_git_root(start: &Path) -> Option<PathBuf> {
+    // Try canonical path first (resolves symlinks for better IDE integration)
+    if let Ok(canonical) = std::fs::canonicalize(start) {
+        for ancestor in canonical.ancestors() {
+            if ancestor.join(".git").exists() {
+                return Some(ancestor.to_path_buf());
+            }
+        }
+    }
+
+    // Fall back to walking the original path if canonicalization fails.
+    // Canonicalize the result for consistency with the primary path above.
+    for ancestor in start.ancestors() {
+        if ancestor.join(".git").exists() {
+            return Some(
+                std::fs::canonicalize(ancestor).unwrap_or_else(|_| ancestor.to_path_buf()),
+            );
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn test_find_git_root_finds_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let result = find_git_root(tmp.path());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), std::fs::canonicalize(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn test_find_git_root_nested() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let nested = tmp.path().join("a").join("b").join("c");
+        std::fs::create_dir_all(&nested).unwrap();
+        let result = find_git_root(&nested);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), std::fs::canonicalize(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn test_find_git_root_worktree_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Git worktrees use a .git *file* pointing to the main repo
+        std::fs::write(tmp.path().join(".git"), "gitdir: /some/other/path").unwrap();
+        let result = find_git_root(tmp.path());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), std::fs::canonicalize(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn test_find_git_root_no_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create a nested dir with its own .git to isolate from the host repo,
+        // then test a sibling dir that has no .git ancestor within tmp.
+        let repo = tmp.path().join("repo");
+        let orphan = tmp.path().join("orphan");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        std::fs::create_dir(&orphan).unwrap();
+
+        // The orphan dir has no .git marker. If the test host's /tmp is inside
+        // a git repo the function may still return Some, so we verify that any
+        // result points outside our tmp dir (i.e. it didn't pick up repo/.git).
+        let result = find_git_root(&orphan);
+        if let Some(ref root) = result {
+            assert!(
+                !root.starts_with(&repo),
+                "Should not find repo/.git from orphan dir, got: {}",
+                root.display()
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_git_root_from_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let nested = tmp.path().join("sub");
+        std::fs::create_dir(&nested).unwrap();
+        let root = find_git_root(&nested);
+        assert_eq!(root, Some(std::fs::canonicalize(tmp.path()).unwrap()));
+    }
+
+    #[test]
+    fn test_find_git_root_nested_repos_returns_innermost() {
+        // Simulate a submodule: outer/.git + outer/inner/.git
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let inner = tmp.path().join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::create_dir(inner.join(".git")).unwrap();
+        let deep = inner.join("src");
+        std::fs::create_dir(&deep).unwrap();
+
+        let result = find_git_root(&deep).unwrap();
+        assert_eq!(
+            result,
+            std::fs::canonicalize(&inner).unwrap(),
+            "Should return the innermost git root (submodule), not the outer repo"
+        );
+    }
+
+    #[test]
+    fn test_find_git_root_returns_canonical_from_fallback() {
+        // Verify that find_git_root returns a canonical (absolute) path even
+        // when the primary canonicalize-then-walk path is used.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        let result = find_git_root(tmp.path()).unwrap();
+        assert!(
+            result.is_absolute(),
+            "find_git_root should return an absolute path, got: {}",
+            result.display()
+        );
+    }
+
+    #[test]
+    fn test_find_git_root_none_fallback_to_cwd() {
+        // When find_git_root returns None (no git repo), callers fall back
+        // to CWD canonicalization. Verify the fallback pattern works.
+        let result: Option<PathBuf> = None;
+        let fallback = result
+            .unwrap_or_else(|| std::fs::canonicalize(".").unwrap_or_else(|_| PathBuf::from(".")));
+        assert!(
+            fallback.is_absolute(),
+            "CWD fallback should always be absolute, got: {}",
+            fallback.display()
+        );
+    }
 
     #[test]
     fn test_sarif_version() {

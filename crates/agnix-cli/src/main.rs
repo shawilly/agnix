@@ -385,8 +385,15 @@ fn validate_command(path: &Path, cli: &Cli) -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("{}", t!("cli.fix_error_text_only")));
     }
 
-    // Resolve absolute path for consistent relative output (prefer repo root)
-    let base_path = std::fs::canonicalize(".").unwrap_or_else(|_| PathBuf::from("."));
+    // Resolve absolute path for consistent relative output.
+    // SARIF uses the git repository root so artifact URIs are relative to the
+    // workspace root, which IDEs expect. Text/JSON use CWD for backwards compatibility.
+    let base_path = if matches!(cli.format, OutputFormat::Sarif) {
+        sarif::find_git_root(path)
+            .unwrap_or_else(|| std::fs::canonicalize(".").unwrap_or_else(|_| PathBuf::from(".")))
+    } else {
+        std::fs::canonicalize(".").unwrap_or_else(|_| PathBuf::from("."))
+    };
 
     // For machine-readable output (JSON/SARIF), force English locale so that
     // diagnostic messages are always in English for tooling interoperability.
