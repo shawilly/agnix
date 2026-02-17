@@ -800,4 +800,106 @@ mod tests {
             via_explicit.total_factory_count()
         );
     }
+
+    // ---- Coverage: every validatable FileType has validators ----
+
+    #[test]
+    fn every_validatable_file_type_has_at_least_one_validator() {
+        let validatable_types: [FileType; 37] = [
+            FileType::Skill,
+            FileType::ClaudeMd,
+            FileType::Agent,
+            FileType::AmpCheck,
+            FileType::Hooks,
+            FileType::Plugin,
+            FileType::Mcp,
+            FileType::Copilot,
+            FileType::CopilotScoped,
+            FileType::CopilotAgent,
+            FileType::CopilotPrompt,
+            FileType::CopilotHooks,
+            FileType::ClaudeRule,
+            FileType::CursorRule,
+            FileType::CursorHooks,
+            FileType::CursorAgent,
+            FileType::CursorEnvironment,
+            FileType::CursorRulesLegacy,
+            FileType::ClineRules,
+            FileType::ClineRulesFolder,
+            FileType::OpenCodeConfig,
+            FileType::GeminiMd,
+            FileType::GeminiSettings,
+            FileType::AmpSettings,
+            FileType::GeminiExtension,
+            FileType::GeminiIgnore,
+            FileType::CodexConfig,
+            FileType::RooRules,
+            FileType::RooModes,
+            FileType::RooIgnore,
+            FileType::RooModeRules,
+            FileType::RooMcp,
+            FileType::WindsurfRule,
+            FileType::WindsurfWorkflow,
+            FileType::WindsurfRulesLegacy,
+            FileType::KiroSteering,
+            FileType::GenericMarkdown,
+        ];
+
+        // Exhaustive match with no wildcard arm - a new variant will cause a
+        // compile error, forcing the developer to update this test.
+        for ft in &validatable_types {
+            match *ft {
+                FileType::Skill
+                | FileType::ClaudeMd
+                | FileType::Agent
+                | FileType::AmpCheck
+                | FileType::Hooks
+                | FileType::Plugin
+                | FileType::Mcp
+                | FileType::Copilot
+                | FileType::CopilotScoped
+                | FileType::CopilotAgent
+                | FileType::CopilotPrompt
+                | FileType::CopilotHooks
+                | FileType::ClaudeRule
+                | FileType::CursorRule
+                | FileType::CursorHooks
+                | FileType::CursorAgent
+                | FileType::CursorEnvironment
+                | FileType::CursorRulesLegacy
+                | FileType::ClineRules
+                | FileType::ClineRulesFolder
+                | FileType::OpenCodeConfig
+                | FileType::GeminiMd
+                | FileType::GeminiSettings
+                | FileType::AmpSettings
+                | FileType::GeminiExtension
+                | FileType::GeminiIgnore
+                | FileType::CodexConfig
+                | FileType::RooRules
+                | FileType::RooModes
+                | FileType::RooIgnore
+                | FileType::RooModeRules
+                | FileType::RooMcp
+                | FileType::WindsurfRule
+                | FileType::WindsurfWorkflow
+                | FileType::WindsurfRulesLegacy
+                | FileType::KiroSteering
+                | FileType::GenericMarkdown => (),
+                FileType::Unknown => {
+                    panic!("Unknown must not appear in validatable_types")
+                }
+            }
+        }
+
+        let registry = ValidatorRegistry::with_defaults();
+
+        for ft in &validatable_types {
+            let validators = registry.validators_for(*ft);
+            assert!(
+                !validators.is_empty(),
+                "{ft:?} has no validators registered in the default registry"
+            );
+        }
+    }
 }
