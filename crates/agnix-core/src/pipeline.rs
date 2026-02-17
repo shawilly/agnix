@@ -806,12 +806,12 @@ pub fn validate_project_with_registry(
                         }
                     }
 
-                    // Collect AGENTS.md paths for AGM-006 check (thread-local, no lock)
+                    // Collect AGENTS.md paths for AGM-006 check (thread-local, no lock).
                     if file_path.file_name().and_then(|n| n.to_str()) == Some("AGENTS.md") {
                         agents.push(file_path.clone());
                     }
 
-                    // Collect instruction file paths for XP-004/005/006 checks (thread-local, no lock)
+                    // Collect instruction file paths for XP-004/005/006 checks (thread-local, no lock).
                     if schemas::cross_platform::is_instruction_file(&file_path) {
                         instructions.push(file_path.clone());
                     }
@@ -823,7 +823,7 @@ pub fn validate_project_with_registry(
                         Err(e) => {
                             diags.push(
                                 Diagnostic::error(
-                                    file_path.clone(),
+                                    file_path,
                                     0,
                                     0,
                                     "file::read",

@@ -945,34 +945,107 @@ pub fn detect_precedence_issues(layers: &[InstructionLayer]) -> Option<LayerPrec
     }
 }
 
-/// Check if a file is an instruction file (for cross-layer detection)
+/// Check if a file is an instruction file (for cross-layer detection).
+///
+/// This implementation is allocation-free: it uses `eq_ignore_ascii_case` for
+/// filename matching and `Path::components()` for directory-based checks,
+/// avoiding the `to_lowercase()` + `String` allocations of the previous version.
 pub fn is_instruction_file(path: &Path) -> bool {
-    let path_str = path.to_string_lossy().to_lowercase();
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+    let file_name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(name) => name,
+        None => return false,
+    };
 
-    // Skip backup/temp files
-    if path_str.ends_with(".bak")
-        || path_str.ends_with(".old")
-        || path_str.ends_with(".tmp")
-        || path_str.ends_with(".swp")
-        || path_str.ends_with('~')
+    // Skip backup/temp files (check the filename, not the full path)
+    if file_name.ends_with(".bak")
+        || file_name.ends_with(".old")
+        || file_name.ends_with(".tmp")
+        || file_name.ends_with(".swp")
+        || file_name.ends_with('~')
     {
         return false;
     }
 
-    file_name == "claude.md"
-        || file_name == "agents.md"
-        || file_name == "gemini.md"
-        || file_name == "gemini.local.md"
-        || file_name == ".clinerules"
-        || (path_str.contains(".cursor")
-            && (path_str.ends_with(".mdc") || path_str.contains("rules")))
-        || (path_str.contains(".github") && path_str.contains("copilot"))
-        || path_str.contains(".opencode")
+    // Direct filename matches (case-insensitive)
+    if file_name.eq_ignore_ascii_case("claude.md")
+        || file_name.eq_ignore_ascii_case("agents.md")
+        || file_name.eq_ignore_ascii_case("gemini.md")
+        || file_name.eq_ignore_ascii_case("gemini.local.md")
+        || file_name.eq_ignore_ascii_case(".clinerules")
+    {
+        return true;
+    }
+
+    // Directory-based checks via path component iteration.
+    // Using components() ensures we match actual directory names, not substrings
+    // of filenames (e.g. "my.cursor-notes.txt" won't false-positive).
+    use std::path::Component;
+
+    let mut found_cursor = false;
+    let mut found_github = false;
+    let mut found_copilot_after_github = false;
+    let mut found_rules = false;
+    let mut found_opencode = false;
+
+    for component in path.components() {
+        let s = match component {
+            Component::Normal(os) => match os.to_str() {
+                Some(s) => s,
+                None => continue,
+            },
+            _ => continue,
+        };
+
+        if s.eq_ignore_ascii_case(".cursor") {
+            found_cursor = true;
+        } else if s.eq_ignore_ascii_case("rules") {
+            found_rules = true;
+        } else if s.eq_ignore_ascii_case(".github") {
+            found_github = true;
+        } else if found_github && ascii_contains_ignore_case(s, "copilot") {
+            found_copilot_after_github = true;
+        } else if s.eq_ignore_ascii_case(".opencode") {
+            found_opencode = true;
+        }
+    }
+
+    // .cursor directory: filename ends with .mdc OR any component is "rules"
+    if found_cursor {
+        let has_mdc_ext = Path::new(file_name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("mdc"));
+        if has_mdc_ext || found_rules {
+            return true;
+        }
+    }
+
+    // .github directory with a copilot-related component after it
+    if found_github && found_copilot_after_github {
+        return true;
+    }
+
+    // .opencode directory
+    if found_opencode {
+        return true;
+    }
+
+    false
+}
+
+/// Case-insensitive ASCII substring search without allocating.
+fn ascii_contains_ignore_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    haystack
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 // ============================================================================
@@ -2251,6 +2324,134 @@ Use pnpm install for dependencies.
         assert!(is_instruction_file(&PathBuf::from(
             ".github/copilot-instructions.md"
         )));
+    }
+
+    // ===== is_instruction_file edge case tests (issue #470) =====
+
+    #[test]
+    fn test_instruction_file_case_variations() {
+        use std::path::PathBuf;
+        // Case-insensitive matching should accept all case variants
+        assert!(
+            is_instruction_file(&PathBuf::from("Claude.MD")),
+            "Claude.MD should match (case-insensitive)"
+        );
+        assert!(
+            is_instruction_file(&PathBuf::from("agents.MD")),
+            "agents.MD should match (case-insensitive)"
+        );
+        assert!(
+            is_instruction_file(&PathBuf::from("GEMINI.md")),
+            "GEMINI.md should match (case-insensitive)"
+        );
+        assert!(
+            is_instruction_file(&PathBuf::from("Gemini.Local.Md")),
+            "Gemini.Local.Md should match (case-insensitive)"
+        );
+        assert!(
+            is_instruction_file(&PathBuf::from(".CLINERULES")),
+            ".CLINERULES should match (case-insensitive)"
+        );
+    }
+
+    #[test]
+    fn test_instruction_file_no_false_positive_cursor_substring() {
+        use std::path::PathBuf;
+        // A filename containing ".cursor" as a substring should NOT match.
+        // The old code used path_str.contains(".cursor") which was buggy.
+        assert!(
+            !is_instruction_file(&PathBuf::from("my.cursor-notes.txt")),
+            "my.cursor-notes.txt should NOT match - .cursor is not a directory component"
+        );
+        assert!(
+            !is_instruction_file(&PathBuf::from("my.cursor-notes.mdc")),
+            "my.cursor-notes.mdc should NOT match - .cursor is not a directory component"
+        );
+    }
+
+    #[test]
+    fn test_instruction_file_deeply_nested_cursor() {
+        use std::path::PathBuf;
+        // Deeply nested path under .cursor with rules should still match
+        assert!(
+            is_instruction_file(&PathBuf::from("a/b/.cursor/rules/deep/file.mdc")),
+            "Deeply nested .cursor/rules path should match"
+        );
+        assert!(
+            is_instruction_file(&PathBuf::from("project/.cursor/rules/api.mdc")),
+            ".cursor/rules/*.mdc should match"
+        );
+        // .cursor without rules and without .mdc should NOT match
+        assert!(
+            !is_instruction_file(&PathBuf::from("a/b/.cursor/config/settings.json")),
+            ".cursor/config/settings.json should NOT match"
+        );
+    }
+
+    #[test]
+    fn test_instruction_file_opencode_directory() {
+        use std::path::PathBuf;
+        assert!(
+            is_instruction_file(&PathBuf::from(".opencode/config.md")),
+            ".opencode directory should match"
+        );
+        assert!(
+            is_instruction_file(&PathBuf::from("project/.opencode/something.yaml")),
+            "nested .opencode directory should match"
+        );
+    }
+
+    #[test]
+    fn test_instruction_file_github_copilot_variants() {
+        use std::path::PathBuf;
+        assert!(
+            is_instruction_file(&PathBuf::from(".github/copilot-instructions.md")),
+            ".github/copilot-instructions.md should match"
+        );
+        assert!(
+            is_instruction_file(&PathBuf::from(".github/copilot/settings.json")),
+            ".github/copilot/settings.json should match"
+        );
+        // .github without copilot should not match
+        assert!(
+            !is_instruction_file(&PathBuf::from(".github/workflows/ci.yml")),
+            ".github/workflows/ci.yml should NOT match"
+        );
+    }
+
+    #[test]
+    fn test_instruction_file_bare_filename_no_path() {
+        use std::path::PathBuf;
+        // File with no parent path
+        assert!(
+            !is_instruction_file(&PathBuf::from("random.mdc")),
+            "random.mdc without .cursor parent should NOT match"
+        );
+        assert!(
+            !is_instruction_file(&PathBuf::from("rules.mdc")),
+            "rules.mdc without .cursor parent should NOT match"
+        );
+    }
+
+    #[test]
+    fn test_instruction_file_empty_and_special_paths() {
+        use std::path::PathBuf;
+        assert!(
+            !is_instruction_file(&PathBuf::from("")),
+            "Empty path should not match"
+        );
+        assert!(
+            is_instruction_file(&PathBuf::from("/CLAUDE.md")),
+            "Absolute path /CLAUDE.md should match"
+        );
+        assert!(
+            is_instruction_file(&PathBuf::from("../../CLAUDE.md")),
+            "Relative path with .. should match"
+        );
+        assert!(
+            !is_instruction_file(&PathBuf::from(".cursor/config.md")),
+            ".cursor/config.md (no .mdc, no rules) should NOT match"
+        );
     }
 
     // ===== ReDoS Protection Tests =====
