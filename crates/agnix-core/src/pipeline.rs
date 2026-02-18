@@ -2,6 +2,7 @@
 
 #[cfg(feature = "filesystem")]
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 #[cfg(feature = "filesystem")]
 use std::path::PathBuf;
@@ -219,12 +220,10 @@ pub fn validate_file(path: &Path, config: &LintConfig) -> LintResult<Vec<Diagnos
 
 /// Validate a single file with a custom validator registry.
 ///
-/// Note: `config.rules().disabled_validators` is NOT applied at runtime in
-/// this path. Callers must disable validators at registry construction time
-/// using [`ValidatorRegistry::disable_validator_owned()`] or the builder
-/// API. For the LSP path where the config changes frequently, use
-/// [`validate_content()`] which applies `disabled_validators` checks at
-/// runtime.
+/// `config.rules().disabled_validators` is applied at runtime, so callers
+/// may share a single `ValidatorRegistry` across configs that differ only
+/// in their disabled-validator sets (e.g. the LSP path). This is consistent
+/// with [`validate_content()`].
 #[cfg(feature = "filesystem")]
 pub fn validate_file_with_registry(
     path: &Path,
@@ -254,10 +253,21 @@ fn validate_file_with_type(
     let content = file_utils::safe_read_file(path)?;
 
     let validators = registry.validators_for(file_type);
+    let disabled = &config.rules().disabled_validators;
     let mut diagnostics = Vec::new();
 
-    for validator in validators {
-        diagnostics.extend(validator.validate(path, &content, config));
+    if disabled.is_empty() {
+        for validator in validators {
+            diagnostics.extend(validator.validate(path, &content, config));
+        }
+    } else {
+        let disabled_set: HashSet<&str> = disabled.iter().map(|s| s.as_str()).collect();
+        for validator in validators {
+            if disabled_set.contains(validator.name()) {
+                continue;
+            }
+            diagnostics.extend(validator.validate(path, &content, config));
+        }
     }
 
     Ok(diagnostics)
@@ -285,19 +295,22 @@ pub fn validate_content(
     let disabled = &config.rules().disabled_validators;
     let mut diagnostics = Vec::new();
 
-    // Runtime disabled_validators check is intentionally preserved here even
-    // though the registry now filters disabled validators at registration time.
-    // The LSP creates a single shared registry via with_defaults() (without
-    // applying config-level disables) and relies on this check to honour
-    // per-workspace disabled_validators from the user's LintConfig.
-    // Convert to HashSet for O(1) per-validator lookup instead of O(n) scan.
-    let disabled_set: std::collections::HashSet<&str> =
-        disabled.iter().map(|s| s.as_str()).collect();
-    for validator in validators {
-        if !disabled_set.is_empty() && disabled_set.contains(validator.name()) {
-            continue;
+    // Runtime disabled_validators check: honours per-config disabled_validators
+    // without requiring them to be pre-applied to the registry. The LSP creates
+    // a single shared registry via with_defaults() and relies on this check to
+    // respect per-workspace disabled_validators from the user's LintConfig.
+    if disabled.is_empty() {
+        for validator in validators {
+            diagnostics.extend(validator.validate(path, content, config));
         }
-        diagnostics.extend(validator.validate(path, content, config));
+    } else {
+        let disabled_set: HashSet<&str> = disabled.iter().map(|s| s.as_str()).collect();
+        for validator in validators {
+            if disabled_set.contains(validator.name()) {
+                continue;
+            }
+            diagnostics.extend(validator.validate(path, content, config));
+        }
     }
 
     diagnostics
