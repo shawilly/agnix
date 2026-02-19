@@ -50,7 +50,7 @@ pub struct ValidateFileInput {
     pub path: String,
     /// Tools to validate for (preferred over legacy target)
     #[schemars(
-        description = "Tools to validate for. Accepts comma-separated string (e.g., 'claude-code,cursor,windsurf') or array (e.g., ['claude-code','cursor']). Uses canonical agnix tool names (case-insensitive), plus compatibility aliases (e.g., 'copilot', 'claudecode'). When non-empty, this overrides legacy target."
+        description = "Tools to validate for. Preferred: JSON array of tool names (e.g. [\"claude-code\", \"cursor\"]). Also accepts comma-separated string (e.g. \"claude-code,cursor\") as a fallback. Uses canonical agnix tool names (case-insensitive), plus compatibility aliases (e.g. \"copilot\", \"claudecode\"). When non-empty, this overrides legacy target."
     )]
     pub tools: Option<ToolsInput>,
     /// Target tool for validation rules
@@ -71,7 +71,7 @@ pub struct ValidateProjectInput {
     pub path: String,
     /// Tools to validate for (preferred over legacy target)
     #[schemars(
-        description = "Tools to validate for. Accepts comma-separated string (e.g., 'claude-code,cursor,windsurf') or array (e.g., ['claude-code','cursor']). Uses canonical agnix tool names (case-insensitive), plus compatibility aliases (e.g., 'copilot', 'claudecode'). When non-empty, this overrides legacy target."
+        description = "Tools to validate for. Preferred: JSON array of tool names (e.g. [\"claude-code\", \"cursor\"]). Also accepts comma-separated string (e.g. \"claude-code,cursor\") as a fallback. Uses canonical agnix tool names (case-insensitive), plus compatibility aliases (e.g. \"copilot\", \"claudecode\"). When non-empty, this overrides legacy target."
     )]
     pub tools: Option<ToolsInput>,
     /// Target tool for validation rules
@@ -83,12 +83,53 @@ pub struct ValidateProjectInput {
 
 /// Tools input for MCP validate tools.
 ///
-/// Supports either comma-separated string or array syntax.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+/// Supports either JSON array (preferred) or comma-separated string (fallback).
+/// Variants are ordered so that serde tries `List` first when deserializing
+/// with `#[serde(untagged)]`, and the manual `JsonSchema` impl emits
+/// `anyOf` with the array variant first to signal preference to MCP clients.
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum ToolsInput {
-    Csv(String),
     List(Vec<String>),
+    Csv(String),
+}
+
+impl schemars::JsonSchema for ToolsInput {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ToolsInput".into()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        concat!(module_path!(), "::ToolsInput").into()
+    }
+
+    fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "anyOf": [
+                {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Preferred: array of tool names, e.g. [\"claude-code\", \"cursor\"]"
+                },
+                {
+                    "type": "string",
+                    "description": "Fallback: comma-separated tool names, e.g. \"claude-code,cursor\""
+                }
+            ]
+        })
+    }
+
+    /// Inline this schema at every usage site instead of emitting a `$ref`.
+    ///
+    /// With `inline_schema = false` (the schemars default), the generator places
+    /// `ToolsInput` in `$defs` and emits `$ref` pointers from `ValidateFileInput`
+    /// and `ValidateProjectInput`. Some MCP clients do not follow `$ref` when
+    /// rendering input-schema choices, which would hide the array-first preference
+    /// signal. Inlining guarantees that the `anyOf` with array first is visible
+    /// directly at every property site.
+    fn inline_schema() -> bool {
+        true
+    }
 }
 
 /// Input for get_rule_docs tool
@@ -469,7 +510,7 @@ impl ServerHandler for AgnixServer {
                  - validate_file: Validate a single config file\n\
                  - get_rules: List all 229 validation rules\n\
                  - get_rule_docs: Get details about a specific rule\n\n\
-                 Preferred input: tools (CSV string or array)\n\
+                 Preferred input: tools (array of tool names, or comma-separated string as fallback)\n\
                  Legacy fallback: target\n\
                  Supported tools are derived from agnix rule metadata"
                     .to_string(),
@@ -732,5 +773,125 @@ mod tests {
             }
             _ => panic!("expected array tools variant"),
         }
+    }
+
+    #[test]
+    fn test_tools_input_schema_prefers_array() {
+        let schema =
+            rmcp::schemars::SchemaGenerator::default().into_root_schema_for::<ToolsInput>();
+        let json = serde_json::to_value(&schema).expect("schema should serialize");
+        let any_of = json
+            .get("anyOf")
+            .and_then(|v| v.as_array())
+            .expect("schema should have anyOf array");
+
+        assert_eq!(any_of.len(), 2, "anyOf must have exactly two entries");
+
+        assert_eq!(
+            any_of[0].get("type").and_then(|v| v.as_str()),
+            Some("array"),
+            "first anyOf entry must be the array variant"
+        );
+        assert_eq!(
+            any_of[1].get("type").and_then(|v| v.as_str()),
+            Some("string"),
+            "second anyOf entry must be the string variant"
+        );
+
+        // Verify items constraint so MCP clients know array elements are strings
+        assert_eq!(
+            any_of[0]
+                .get("items")
+                .and_then(|v| v.get("type"))
+                .and_then(|v| v.as_str()),
+            Some("string"),
+            "array variant must have items.type == 'string'"
+        );
+    }
+
+    #[test]
+    fn test_tools_input_schema_has_variant_descriptions() {
+        let schema =
+            rmcp::schemars::SchemaGenerator::default().into_root_schema_for::<ToolsInput>();
+        let json = serde_json::to_value(&schema).expect("schema should serialize");
+        let any_of = json
+            .get("anyOf")
+            .and_then(|v| v.as_array())
+            .expect("schema should have anyOf array");
+
+        let array_desc = any_of[0]
+            .get("description")
+            .and_then(|v| v.as_str())
+            .expect("array variant should have description");
+        assert!(
+            array_desc.contains("Preferred"),
+            "array variant description should contain 'Preferred', got: {}",
+            array_desc
+        );
+
+        let string_desc = any_of[1]
+            .get("description")
+            .and_then(|v| v.as_str())
+            .expect("string variant should have description");
+        assert!(
+            string_desc.contains("Fallback"),
+            "string variant description should contain 'Fallback', got: {}",
+            string_desc
+        );
+    }
+
+    #[test]
+    fn test_tools_input_deserialization_after_reorder() {
+        // JSON array should deserialize to List variant
+        let list: ToolsInput =
+            serde_json::from_value(json!(["claude-code", "cursor"])).expect("array should parse");
+        match list {
+            ToolsInput::List(values) => assert_eq!(values, vec!["claude-code", "cursor"]),
+            ToolsInput::Csv(_) => panic!("expected List variant for JSON array input"),
+        }
+
+        // JSON string should deserialize to Csv variant
+        let csv: ToolsInput =
+            serde_json::from_value(json!("claude-code,cursor")).expect("string should parse");
+        match csv {
+            ToolsInput::Csv(value) => assert_eq!(value, "claude-code,cursor"),
+            ToolsInput::List(_) => panic!("expected Csv variant for JSON string input"),
+        }
+    }
+
+    #[test]
+    fn test_validate_file_input_schema_tools_description() {
+        let schema =
+            rmcp::schemars::SchemaGenerator::default().into_root_schema_for::<ValidateFileInput>();
+        let json = serde_json::to_value(&schema).expect("schema should serialize");
+        let json_str = serde_json::to_string(&json).unwrap();
+        // The tools field description must mention Preferred/Fallback so MCP clients
+        // see clear guidance on the expected input format in ValidateFileInput.
+        assert!(
+            json_str.contains("Preferred"),
+            "ValidateFileInput schema must mention 'Preferred' for tools field"
+        );
+        assert!(
+            json_str.contains("fallback"),
+            "ValidateFileInput schema must mention 'fallback' for tools field"
+        );
+    }
+
+    #[test]
+    fn test_validate_project_input_schema_tools_description() {
+        let schema = rmcp::schemars::SchemaGenerator::default()
+            .into_root_schema_for::<ValidateProjectInput>();
+        let json = serde_json::to_value(&schema).expect("schema should serialize");
+        let json_str = serde_json::to_string(&json).unwrap();
+        // The tools field description must mention Preferred/Fallback so MCP clients
+        // see clear guidance on the expected input format in ValidateProjectInput.
+        assert!(
+            json_str.contains("Preferred"),
+            "ValidateProjectInput schema must mention 'Preferred' for tools field"
+        );
+        assert!(
+            json_str.contains("fallback"),
+            "ValidateProjectInput schema must mention 'fallback' for tools field"
+        );
     }
 }
