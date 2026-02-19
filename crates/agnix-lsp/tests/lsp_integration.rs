@@ -55,35 +55,39 @@ mod diagnostic_mapper_tests {
 
 mod validation_tests {
     use agnix_core::LintConfig;
-    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
     fn test_validate_valid_skill_file() {
-        let mut file = NamedTempFile::with_suffix(".md").unwrap();
-        writeln!(
-            file,
-            r#"---
-name: test-skill
-version: 1.0.0
-model: sonnet
----
-
-# Test Skill
-
-This is a valid skill file.
-"#
+        // Create a skill inside a directory whose name matches the skill name.
+        // This avoids AS-017 (name/directory mismatch). The file also includes
+        // a description to avoid AS-003, and omits non-standard fields
+        // (version, model) to avoid CC-SK-017 / XP-SK-001.
+        let skill_dir = tempfile::tempdir().unwrap();
+        let named_dir = skill_dir.path().join("test-skill");
+        std::fs::create_dir(&named_dir).unwrap();
+        let skill_path = named_dir.join("SKILL.md");
+        std::fs::write(
+            &skill_path,
+            "---\nname: test-skill\ndescription: Use when running test skill\n---\n\n# Test Skill\n\nThis is a valid skill file.\n",
         )
         .unwrap();
-
-        // Rename to SKILL.md to trigger skill validation
-        let skill_dir = tempfile::tempdir().unwrap();
-        let skill_path = skill_dir.path().join("SKILL.md");
-        std::fs::copy(file.path(), &skill_path).unwrap();
 
         let config = LintConfig::default();
         let result = agnix_core::validate_file(&skill_path, &config);
         assert!(result.is_ok());
+        let outcome = result.unwrap();
+        assert!(outcome.is_success());
+        let diags = outcome.into_diagnostics();
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.level == agnix_core::DiagnosticLevel::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "Valid skill file should produce no error-level diagnostics, got: {:?}",
+            errors
+        );
     }
 
     #[test]
@@ -110,7 +114,7 @@ This skill has an invalid name.
         let result = agnix_core::validate_file(&skill_path, &config);
         assert!(result.is_ok());
 
-        let diagnostics = result.unwrap();
+        let diagnostics = result.unwrap().into_diagnostics();
         // Should have at least one error for invalid name
         assert!(!diagnostics.is_empty());
         assert!(
@@ -129,9 +133,9 @@ This skill has an invalid name.
         let result = agnix_core::validate_file(file.path(), &config);
         assert!(result.is_ok());
 
-        // Unknown file types should return empty diagnostics
-        let diagnostics = result.unwrap();
-        assert!(diagnostics.is_empty());
+        // Unknown file types should return Skipped
+        let outcome = result.unwrap();
+        assert!(outcome.is_skipped());
     }
 }
 
@@ -1266,6 +1270,114 @@ unknownfield: value
 
         assert!(result.is_ok());
         // May or may not have actions depending on validation results
+    }
+}
+
+/// Tests verifying how the LSP layer handles `IoError` outcomes from the core
+/// validation pipeline.
+///
+/// The LSP calls `validate_file` / `validate_file_with_registry` and then
+/// converts the resulting `ValidationOutcome` into LSP diagnostics. When the
+/// file is unreadable, the core returns `ValidationOutcome::IoError` and
+/// `into_diagnostics()` must produce a single `file::read` diagnostic at
+/// position line 0 / column 0 (the convention used by `Diagnostic::error` for
+/// non-line-specific errors).
+///
+/// These tests pin that contract so that LSP position mapping (which converts
+/// 1-indexed `Diagnostic.line` to 0-indexed LSP positions) cannot regress.
+mod lsp_io_error_outcome_tests {
+    use agnix_core::{DiagnosticLevel, LintConfig};
+
+    /// Unix-only: make a SKILL.md unreadable, call `validate_file`, assert
+    /// `IoError`, then assert `into_diagnostics()` produces a single
+    /// `file::read` error at line 0 / column 0.
+    ///
+    /// The test is skipped when running as root because root can read files
+    /// regardless of permission bits.
+    #[cfg(unix)]
+    #[test]
+    fn test_lsp_io_error_produces_file_read_diagnostic_at_zero_position() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_path = temp_dir.path().join("SKILL.md");
+
+        fs::write(
+            &skill_path,
+            "---\nname: test-skill\ndescription: Use when testing\n---\n\n# Test\n",
+        )
+        .unwrap();
+
+        // Make the file unreadable.
+        let original_mode = fs::metadata(&skill_path).unwrap().permissions().mode();
+        fs::set_permissions(&skill_path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Probe whether the permission change took effect. On systems where the
+        // process runs as root, chmod(0o000) does not prevent reads, so we skip
+        // rather than produce a false failure.
+        let probe_readable = fs::read(&skill_path).is_ok();
+        if probe_readable {
+            // Running as root or on a filesystem that ignores permission bits.
+            // Restore and skip.
+            fs::set_permissions(&skill_path, fs::Permissions::from_mode(original_mode)).unwrap();
+            return;
+        }
+
+        let config = LintConfig::default();
+        let result = agnix_core::validate_file(&skill_path, &config);
+
+        // Restore permissions before any assertions so the temp dir can be
+        // cleaned up even if an assertion panics.
+        fs::set_permissions(&skill_path, fs::Permissions::from_mode(original_mode)).unwrap();
+
+        // The call must succeed at the Result level (IoError is not an Err).
+        assert!(
+            result.is_ok(),
+            "validate_file should return Ok(IoError), not Err: {:?}",
+            result
+        );
+
+        let outcome = result.unwrap();
+        assert!(
+            outcome.is_io_error(),
+            "Expected ValidationOutcome::IoError for unreadable file, got success/skipped"
+        );
+
+        // `into_diagnostics()` must produce exactly one `file::read` error at
+        // line 0 / column 0 - the LSP maps these to position (0, 0) in the
+        // document (first character).
+        let diags = outcome.into_diagnostics();
+        assert_eq!(
+            diags.len(),
+            1,
+            "IoError should produce exactly one diagnostic, got: {:?}",
+            diags
+        );
+
+        let diag = &diags[0];
+        assert_eq!(
+            diag.rule, "file::read",
+            "IoError diagnostic rule should be 'file::read', got: {}",
+            diag.rule
+        );
+        assert_eq!(
+            diag.level,
+            DiagnosticLevel::Error,
+            "IoError diagnostic should have Error level"
+        );
+        assert_eq!(
+            diag.line, 0,
+            "IoError diagnostic should be at line 0 (non-line-specific error position)"
+        );
+        assert_eq!(
+            diag.column, 0,
+            "IoError diagnostic should be at column 0 (non-line-specific error position)"
+        );
+        assert_eq!(
+            diag.file, skill_path,
+            "IoError diagnostic file path should match the input path"
+        );
     }
 }
 

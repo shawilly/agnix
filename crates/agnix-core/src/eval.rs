@@ -6,7 +6,9 @@
 
 #[cfg(test)]
 use crate::FileError;
-use crate::{CoreError, Diagnostic, LintConfig, file_utils::safe_read_file, validate_file};
+use crate::{
+    CoreError, Diagnostic, LintConfig, ValidationOutcome, file_utils::safe_read_file, validate_file,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -395,7 +397,17 @@ pub fn evaluate_case(case: &EvalCase, base_dir: &Path, config: &LintConfig) -> E
 
     // Run validation
     let diagnostics = match validate_file(&file_path, config) {
-        Ok(diags) => diags,
+        Ok(ValidationOutcome::Success(diags)) => diags,
+        Ok(ValidationOutcome::IoError(file_error)) => {
+            vec![Diagnostic::error(
+                file_path.clone(),
+                0,
+                0,
+                "eval::io-error",
+                format!("File I/O error: {}", file_error),
+            )]
+        }
+        Ok(ValidationOutcome::Skipped) => vec![],
         Err(e) => {
             // If validation fails, treat it as if no rules fired
             // but include the error as a special diagnostic
@@ -1067,6 +1079,57 @@ cases:
         assert_eq!(format!("{}", EvalFormat::Csv), "csv");
     }
 
+    /// Test that the `ValidationOutcome::IoError` arm of `evaluate_case` produces
+    /// a diagnostic with rule `"eval::io-error"`.
+    ///
+    /// The IoError arm is reached when the file exists on disk (so
+    /// `validate_path_within_base` succeeds) but cannot be read (so
+    /// `validate_file` returns `ValidationOutcome::IoError`).
+    #[cfg(unix)]
+    #[test]
+    fn test_evaluate_case_io_error_arm() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        // Use a known-type path so the file is not skipped as FileType::Unknown
+        let skill_path = temp.path().join("SKILL.md");
+        std::fs::write(&skill_path, "# Test skill\n").unwrap();
+
+        // Make the file unreadable so `validate_file` returns `ValidationOutcome::IoError`
+        let original_mode = std::fs::metadata(&skill_path).unwrap().permissions().mode();
+        std::fs::set_permissions(&skill_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Probe whether the permission change took effect. On systems where the
+        // process runs as root, chmod(0o000) does not prevent reads, so we skip
+        // rather than produce a false failure.
+        let probe_readable = std::fs::read(&skill_path).is_ok();
+        if probe_readable {
+            // Running as root or on a filesystem that ignores permission bits.
+            // Restore and skip.
+            std::fs::set_permissions(&skill_path, std::fs::Permissions::from_mode(original_mode))
+                .unwrap();
+            return;
+        }
+
+        let case = EvalCase {
+            file: PathBuf::from("SKILL.md"),
+            expected: vec![],
+            description: Some("Unreadable file triggers IoError arm".to_string()),
+        };
+
+        let config = LintConfig::default();
+        let result = evaluate_case(&case, temp.path(), &config);
+
+        // Restore permissions before cleanup
+        std::fs::set_permissions(&skill_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(
+            result.actual.contains(&"eval::io-error".to_string()),
+            "Expected eval::io-error diagnostic for unreadable file, got: {:?}",
+            result.actual
+        );
+    }
+
     #[test]
     fn test_eval_summary_empty_results() {
         let results: Vec<EvalResult> = vec![];
@@ -1176,5 +1239,43 @@ cases:
         let json_str = json.unwrap();
         assert!(json_str.contains("cases_run"));
         assert!(json_str.contains("overall_f1"));
+    }
+
+    /// Test that the `ValidationOutcome::Skipped` arm of `evaluate_case` produces
+    /// no diagnostics and no `eval::io-error` rule when the file has an unknown extension.
+    #[test]
+    fn test_evaluate_case_skipped_for_unknown_extension() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // Create a file with an unknown extension that will be Skipped
+        let unknown_file = temp.path().join("test.xyz");
+        std::fs::write(&unknown_file, "arbitrary content").unwrap();
+
+        let case = EvalCase {
+            file: PathBuf::from("test.xyz"),
+            expected: vec![],
+            description: Some("Unknown file type should be skipped".to_string()),
+        };
+
+        let config = LintConfig::default();
+        let result = evaluate_case(&case, temp.path(), &config);
+
+        // Should not contain eval::io-error (file exists and is readable)
+        assert!(
+            !result.actual.contains(&"eval::io-error".to_string()),
+            "Skipped file should not produce eval::io-error, got: {:?}",
+            result.actual
+        );
+        // Should not contain eval::error
+        assert!(
+            !result.actual.contains(&"eval::error".to_string()),
+            "Skipped file should not produce eval::error, got: {:?}",
+            result.actual
+        );
+        // With empty expected and no actual diagnostics, the case should pass
+        assert!(
+            result.passed(),
+            "Skipped file with empty expected should pass, got: {:?}",
+            result
+        );
     }
 }

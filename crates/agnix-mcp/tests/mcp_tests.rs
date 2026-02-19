@@ -128,7 +128,7 @@ mod validation_tests {
         let result = validate_file(&skill_path, &config);
 
         assert!(result.is_ok());
-        let diagnostics = result.unwrap();
+        let diagnostics = result.unwrap().into_diagnostics();
         // Valid skill should have no errors (may have warnings)
         let errors: Vec<_> = diagnostics
             .iter()
@@ -146,7 +146,7 @@ mod validation_tests {
         let result = validate_file(&skill_path, &config);
 
         assert!(result.is_ok());
-        let diagnostics = result.unwrap();
+        let diagnostics = result.unwrap().into_diagnostics();
         // Invalid skill name should produce error
         let errors: Vec<_> = diagnostics
             .iter()
@@ -175,14 +175,64 @@ mod validation_tests {
     }
 
     #[test]
-    fn test_validate_file_nonexistent_path_returns_file_error() {
+    fn test_validate_file_nonexistent_path_returns_io_error() {
         let config = LintConfig::default();
         let result = validate_file(std::path::Path::new("/nonexistent/path/file.md"), &config);
-        let err = result.unwrap_err();
+        let outcome = result.unwrap();
         assert!(
-            matches!(err, agnix_core::CoreError::File(_)),
-            "nonexistent path should produce CoreError::File, got: {:?}",
-            err
+            outcome.is_io_error(),
+            "nonexistent path should produce ValidationOutcome::IoError, got: {:?}",
+            outcome
+        );
+    }
+
+    /// Verify the `into_diagnostics()` contract for `ValidationOutcome::IoError`
+    /// when `validate_file` is called on a nonexistent path with a known file
+    /// type extension (SKILL.md).
+    ///
+    /// This pins the diagnostic fields that the MCP handler serialises to JSON:
+    /// - `rule` must be `"file::read"`
+    /// - `level` must be `Error`
+    /// - `file` must match the input path
+    ///
+    /// MCP layer JSON serialisation of these fields is covered by the
+    /// `test_diagnostic_json_serialization` test in `output_format_tests`.
+    #[test]
+    fn test_validate_file_io_error_into_diagnostics_fields() {
+        use agnix_core::diagnostics::DiagnosticLevel;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let input_path = temp.path().join("SKILL.md");
+        let config = LintConfig::default();
+        let outcome = validate_file(&input_path, &config).unwrap();
+
+        assert!(
+            outcome.is_io_error(),
+            "Expected IoError for nonexistent SKILL.md path, got: {:?}",
+            outcome
+        );
+
+        let diags = outcome.into_diagnostics();
+        assert_eq!(
+            diags.len(),
+            1,
+            "IoError should produce exactly one diagnostic via into_diagnostics()"
+        );
+
+        let diag = &diags[0];
+        assert_eq!(
+            diag.rule, "file::read",
+            "IoError diagnostic rule must be 'file::read', got: {}",
+            diag.rule
+        );
+        assert_eq!(
+            diag.level,
+            DiagnosticLevel::Error,
+            "IoError diagnostic must have Error level"
+        );
+        assert_eq!(
+            diag.file, input_path,
+            "IoError diagnostic file path must match the input path"
         );
     }
 
@@ -207,8 +257,9 @@ mod validation_tests {
         let result = validate_file(std::path::Path::new(""), &config);
 
         // Empty path resolves to FileType::Unknown, and validate_file returns
-        // Ok(vec![]) for unknown file types without reading the file.
+        // Ok(Skipped) for unknown file types without reading the file.
         assert!(result.is_ok(), "Empty path should not panic: {:?}", result);
+        assert!(result.unwrap().is_skipped());
     }
 
     #[test]
