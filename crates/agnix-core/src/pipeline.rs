@@ -23,6 +23,7 @@ use crate::diagnostics::{ConfigError, CoreError, LintResult, ValidationError, Va
 use crate::file_types::{FileType, detect_file_type};
 #[cfg(feature = "filesystem")]
 use crate::file_utils;
+use crate::parsers::frontmatter::normalize_line_endings;
 use crate::registry::ValidatorRegistry;
 #[cfg(feature = "filesystem")]
 use crate::schemas;
@@ -263,13 +264,14 @@ fn validate_file_with_type(
         return Ok(ValidationOutcome::Skipped);
     }
 
-    let content = match file_utils::safe_read_file(path) {
+    let raw_content = match file_utils::safe_read_file(path) {
         Ok(content) => content,
         Err(CoreError::File(file_error)) => {
             return Ok(ValidationOutcome::IoError(file_error));
         }
         Err(other) => return Err(other),
     };
+    let content = normalize_line_endings(&raw_content);
 
     let validators = registry.validators_for(file_type);
     let disabled = &config.rules().disabled_validators;
@@ -310,6 +312,8 @@ pub fn validate_content(
         return vec![];
     }
 
+    let content = normalize_line_endings(content);
+
     let validators = registry.validators_for(file_type);
     let disabled = &config.rules().disabled_validators;
     let mut diagnostics = Vec::new();
@@ -320,7 +324,7 @@ pub fn validate_content(
     // respect per-workspace disabled_validators from the user's LintConfig.
     if disabled.is_empty() {
         for validator in validators {
-            diagnostics.extend(validator.validate(path, content, config));
+            diagnostics.extend(validator.validate(path, &content, config));
         }
     } else {
         let disabled_set: HashSet<&str> = disabled.iter().map(|s| s.as_str()).collect();
@@ -328,7 +332,7 @@ pub fn validate_content(
             if disabled_set.contains(validator.name()) {
                 continue;
             }
-            diagnostics.extend(validator.validate(path, content, config));
+            diagnostics.extend(validator.validate(path, &content, config));
         }
     }
 
@@ -490,7 +494,13 @@ fn run_project_level_checks(
             let mut file_contents: Vec<(PathBuf, String)> = Vec::new();
             for file_path in instruction_file_paths.iter() {
                 match file_utils::safe_read_file(file_path) {
-                    Ok(content) => {
+                    Ok(raw) => {
+                        // Match on the Cow to avoid a second scan: Borrowed means LF-only
+                        // (reuse the already-owned String), Owned means normalization was needed.
+                        let content = match normalize_line_endings(&raw) {
+                            std::borrow::Cow::Borrowed(_) => raw,
+                            std::borrow::Cow::Owned(normalized) => normalized,
+                        };
                         file_contents.push((file_path.clone(), content));
                     }
                     Err(e) => {
@@ -1029,6 +1039,129 @@ mod validate_content_tests {
         // Should not panic with tool filter
         let _ = validate_content(path, content, &config, &registry);
     }
+
+    #[test]
+    fn crlf_content_produces_same_diagnostics_as_lf() {
+        let config = LintConfig::default();
+        let registry = ValidatorRegistry::with_defaults();
+        let path = Path::new("skill.md");
+
+        let lf_content =
+            "---\nname: test-skill\ndescription: A test\n---\n\n# Instructions\n\n<unclosed>\n";
+        let crlf_content = "---\r\nname: test-skill\r\ndescription: A test\r\n---\r\n\r\n# Instructions\r\n\r\n<unclosed>\r\n";
+
+        let lf_diags = validate_content(path, lf_content, &config, &registry);
+        let crlf_diags = validate_content(path, crlf_content, &config, &registry);
+
+        assert_eq!(
+            lf_diags.len(),
+            crlf_diags.len(),
+            "CRLF and LF content should produce the same number of diagnostics.\nLF: {:?}\nCRLF: {:?}",
+            lf_diags
+                .iter()
+                .map(|d| (&d.rule, d.line, d.column))
+                .collect::<Vec<_>>(),
+            crlf_diags
+                .iter()
+                .map(|d| (&d.rule, d.line, d.column))
+                .collect::<Vec<_>>(),
+        );
+
+        for (lf_d, crlf_d) in lf_diags.iter().zip(crlf_diags.iter()) {
+            assert_eq!(
+                lf_d.rule, crlf_d.rule,
+                "Same rules should fire for LF and CRLF content"
+            );
+            assert_eq!(
+                lf_d.line, crlf_d.line,
+                "Line numbers should match between LF and CRLF for rule {}",
+                lf_d.rule
+            );
+            assert_eq!(
+                lf_d.column, crlf_d.column,
+                "Column numbers should match between LF and CRLF for rule {}",
+                lf_d.rule
+            );
+        }
+    }
+
+    #[test]
+    fn lf_validation_is_stable() {
+        let config = LintConfig::default();
+        let registry = ValidatorRegistry::with_defaults();
+        let path = Path::new("CLAUDE.md");
+
+        // Already-normalized content should produce the same result on repeated calls.
+        let content = "# Project\n\nInstructions here.\n";
+        let diags1 = validate_content(path, content, &config, &registry);
+        let diags2 = validate_content(path, content, &config, &registry);
+
+        assert_eq!(
+            diags1.len(),
+            diags2.len(),
+            "Repeated validation of LF content should be stable"
+        );
+    }
+
+    #[test]
+    fn crlf_validation_is_idempotent() {
+        let config = LintConfig::default();
+        let registry = ValidatorRegistry::with_defaults();
+        let path = Path::new("skill.md");
+
+        // Validating CRLF content twice should produce identical diagnostics each time.
+        let crlf_content =
+            "---\r\nname: test-skill\r\ndescription: A test\r\n---\r\n\r\n# Instructions\r\n";
+        let diags1 = validate_content(path, crlf_content, &config, &registry);
+        let diags2 = validate_content(path, crlf_content, &config, &registry);
+
+        assert_eq!(
+            diags1.len(),
+            diags2.len(),
+            "Repeated validation of CRLF content should be stable"
+        );
+        for (d1, d2) in diags1.iter().zip(diags2.iter()) {
+            assert_eq!(d1.rule, d2.rule);
+            assert_eq!(d1.line, d2.line);
+            assert_eq!(d1.column, d2.column);
+        }
+    }
+
+    #[test]
+    fn lone_cr_content_produces_same_diagnostics_as_lf() {
+        // Lone CR (\r without following \n) is the old Mac line ending format.
+        // normalize_line_endings handles it in its single-pass char iterator,
+        // which converts any bare \r (not followed by \n) to \n.
+        let config = LintConfig::default();
+        let registry = ValidatorRegistry::with_defaults();
+        let path = Path::new("skill.md");
+
+        let lf_content = "---\nname: test-skill\ndescription: A test\n---\n\n# Instructions\n";
+        // Same content with lone CR instead of LF
+        let cr_content = "---\rname: test-skill\rdescription: A test\r---\r\r# Instructions\r";
+
+        let lf_diags = validate_content(path, lf_content, &config, &registry);
+        let cr_diags = validate_content(path, cr_content, &config, &registry);
+
+        assert_eq!(
+            lf_diags.len(),
+            cr_diags.len(),
+            "Lone-CR and LF content should produce the same number of diagnostics.\nLF: {:?}\nCR: {:?}",
+            lf_diags
+                .iter()
+                .map(|d| (&d.rule, d.line, d.column))
+                .collect::<Vec<_>>(),
+            cr_diags
+                .iter()
+                .map(|d| (&d.rule, d.line, d.column))
+                .collect::<Vec<_>>(),
+        );
+        for (lf_d, cr_d) in lf_diags.iter().zip(cr_diags.iter()) {
+            assert_eq!(lf_d.rule, cr_d.rule);
+            assert_eq!(lf_d.line, cr_d.line);
+            assert_eq!(lf_d.column, cr_d.column);
+        }
+    }
 }
 
 #[cfg(all(test, feature = "filesystem"))]
@@ -1343,5 +1476,64 @@ mod tests {
             "XP-004 should still emit read-error diagnostic when enabled, got: {xp004_errors:?}"
         );
         assert_eq!(xp004_errors[0].file, agents_md);
+    }
+
+    #[test]
+    fn crlf_file_on_disk_produces_same_diagnostics_as_lf() {
+        // validate_file() reads from disk and normalizes CRLF in validate_file_with_type.
+        // Verify the on-disk path produces the same diagnostics as the in-memory path.
+        use crate::diagnostics::ValidationOutcome;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let lf_path = temp.path().join("skill_lf.md");
+        let crlf_path = temp.path().join("skill_crlf.md");
+
+        let lf_content =
+            "---\nname: test-skill\ndescription: A test\n---\n\n# Instructions\n\n<unclosed>\n";
+        let crlf_content = "---\r\nname: test-skill\r\ndescription: A test\r\n---\r\n\r\n# Instructions\r\n\r\n<unclosed>\r\n";
+
+        std::fs::write(&lf_path, lf_content).unwrap();
+        std::fs::write(&crlf_path, crlf_content).unwrap();
+
+        let config = LintConfig::default();
+
+        let lf_outcome = validate_file(&lf_path, &config).unwrap();
+        let crlf_outcome = validate_file(&crlf_path, &config).unwrap();
+
+        let lf_diags = match lf_outcome {
+            ValidationOutcome::Success(d) => d,
+            other => panic!("Expected Success, got {other:?}"),
+        };
+        let crlf_diags = match crlf_outcome {
+            ValidationOutcome::Success(d) => d,
+            other => panic!("Expected Success, got {other:?}"),
+        };
+
+        assert_eq!(
+            lf_diags.len(),
+            crlf_diags.len(),
+            "On-disk CRLF file should produce same diagnostic count as LF file.\nLF: {:?}\nCRLF: {:?}",
+            lf_diags
+                .iter()
+                .map(|d| (&d.rule, d.line, d.column))
+                .collect::<Vec<_>>(),
+            crlf_diags
+                .iter()
+                .map(|d| (&d.rule, d.line, d.column))
+                .collect::<Vec<_>>(),
+        );
+        for (lf_d, crlf_d) in lf_diags.iter().zip(crlf_diags.iter()) {
+            assert_eq!(lf_d.rule, crlf_d.rule, "Same rules should fire");
+            assert_eq!(
+                lf_d.line, crlf_d.line,
+                "Line numbers should match for rule {}",
+                lf_d.rule
+            );
+            assert_eq!(
+                lf_d.column, crlf_d.column,
+                "Column numbers should match for rule {}",
+                lf_d.rule
+            );
+        }
     }
 }

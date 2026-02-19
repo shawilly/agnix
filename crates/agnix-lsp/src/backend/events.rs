@@ -1,9 +1,18 @@
+use agnix_core::__internal::normalize_line_endings;
+
 use super::*;
 
 impl Backend {
     pub(super) async fn handle_did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
-        let text = params.text_document.text;
+        // Normalize CRLF so the cached content matches the LF-relative byte offsets
+        // produced by validate_content and used by code actions for fix ranges.
+        // Match on the Cow to reuse the original String for LF-only documents.
+        let raw = params.text_document.text;
+        let text = match normalize_line_endings(&raw) {
+            std::borrow::Cow::Borrowed(_) => raw,
+            std::borrow::Cow::Owned(normalized) => normalized,
+        };
         {
             let mut docs = self.documents.write().await;
             docs.insert(uri.clone(), Arc::new(text));
@@ -14,9 +23,17 @@ impl Backend {
     pub(super) async fn handle_did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
         if let Some(change) = params.content_changes.into_iter().next() {
+            // Normalize CRLF so the cached content matches the LF-relative byte offsets
+            // produced by validate_content and used by code actions for fix ranges.
+            // Match on the Cow to reuse the original String for LF-only documents.
+            let raw = change.text;
+            let text = match normalize_line_endings(&raw) {
+                std::borrow::Cow::Borrowed(_) => raw,
+                std::borrow::Cow::Owned(normalized) => normalized,
+            };
             {
                 let mut docs = self.documents.write().await;
-                docs.insert(uri.clone(), Arc::new(change.text));
+                docs.insert(uri.clone(), Arc::new(text));
             }
             self.validate_from_content_and_publish(uri, None).await;
         }

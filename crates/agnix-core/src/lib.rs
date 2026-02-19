@@ -116,13 +116,15 @@ pub use rules::{Validator, ValidatorMetadata};
 #[doc(hidden)]
 pub mod __internal {
     pub use crate::parsers::ImportCache;
-    pub use crate::parsers::frontmatter::{FrontmatterParts, split_frontmatter};
+    pub use crate::parsers::frontmatter::{
+        FrontmatterParts, normalize_line_endings, split_frontmatter,
+    };
     pub use crate::parsers::json::parse_json_config;
     pub use crate::parsers::markdown::Import;
     pub use crate::parsers::markdown::{
         MAX_REGEX_INPUT_SIZE, MarkdownLink, XmlTag, check_xml_balance,
         check_xml_balance_with_content_end, extract_imports, extract_markdown_links,
-        extract_xml_tags,
+        extract_xml_tags, sanitize_for_pulldown_cmark,
     };
     pub use crate::schemas::cross_platform::is_instruction_file;
 }

@@ -2,6 +2,7 @@
 
 use crate::diagnostics::{Diagnostic, FIX_CONFIDENCE_MEDIUM_THRESHOLD, Fix, LintResult};
 use crate::fs::{FileSystem, RealFileSystem};
+use crate::parsers::frontmatter::normalize_line_endings;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,14 +31,21 @@ impl FixApplyOptions {
     }
 }
 
-/// Result of applying fixes to a file
+/// Result of applying fixes to a file.
+///
+/// # Line endings
+///
+/// Both `original` and `fixed` hold LF-normalized content (CRLF and lone CR are
+/// converted to LF before fixes are applied). Files on disk that used CRLF endings
+/// will be written back with LF endings as a side effect of fix application. This is
+/// intentional and consistent with the rest of the validation pipeline.
 #[derive(Debug, Clone)]
 pub struct FixResult {
     /// Path to the file
     pub path: PathBuf,
-    /// Original file content
+    /// Original file content (LF-normalized; may differ from raw on-disk bytes for CRLF files)
     pub original: String,
-    /// Content after fixes applied
+    /// Content after fixes applied (LF-normalized)
     pub fixed: String,
     /// Descriptions of applied fixes
     pub applied: Vec<String>,
@@ -107,6 +115,11 @@ pub fn apply_fixes_with_options(
 }
 
 /// Apply fixes using explicit options and an optional file system abstraction.
+///
+/// File content is CRLF-normalized before fixes are applied, so byte offsets in
+/// [`Fix`] objects must reference LF-normalized positions (as produced by
+/// `validate_content` or `validate_file`). Files with CRLF endings
+/// will be written back with LF endings.
 pub fn apply_fixes_with_fs_options(
     diagnostics: &[Diagnostic],
     options: FixApplyOptions,
@@ -125,7 +138,13 @@ pub fn apply_fixes_with_fs_options(
     let mut results = Vec::new();
 
     for (path, file_diagnostics) in by_file {
-        let original = fs.read_to_string(&path)?;
+        let raw_content = fs.read_to_string(&path)?;
+        // Match on the Cow to avoid a second scan: Borrowed means LF-only (reuse the
+        // already-owned String), Owned means normalization was needed.
+        let original = match normalize_line_endings(&raw_content) {
+            std::borrow::Cow::Borrowed(_) => raw_content,
+            std::borrow::Cow::Owned(normalized) => normalized,
+        };
 
         let mut fixes = select_fixes(&file_diagnostics, options.mode);
 
@@ -1041,6 +1060,98 @@ mod tests {
 
         assert_eq!(result, "hello\nworld");
         assert_eq!(applied.len(), 1);
+    }
+
+    #[test]
+    fn test_apply_fixes_with_mock_fs_crlf_normalization() {
+        // Verify that apply_fixes_with_fs_options normalizes CRLF before applying fixes.
+        // The fix byte offsets are computed against LF-normalized content (as validators see it).
+        use crate::fs::MockFileSystem;
+
+        let mock_fs = MockFileSystem::new();
+        // File on disk has CRLF endings: "name:\r\n bad-name"
+        // After normalization: "name:\n bad-name"
+        //   byte 0..5 = "name:", byte 5 = '\n', byte 6 = ' ', byte 7..15 = "bad-name"
+        // Fix replaces "bad-name" (bytes 7..15 in normalized form) with "good-name"
+        mock_fs.add_file("/project/skill.md", "name:\r\n bad-name");
+
+        let diagnostics = vec![make_diagnostic(
+            "/project/skill.md",
+            vec![Fix::replace(7, 15, "good-name", "Fix name", true)],
+        )];
+
+        let results =
+            apply_fixes_with_fs(&diagnostics, true, false, Some(Arc::new(mock_fs))).unwrap();
+
+        assert_eq!(results.len(), 1, "Should produce one FixResult");
+        assert!(
+            !results[0].original.contains('\r'),
+            "FixResult.original should be LF-normalized (no \\r)"
+        );
+        assert_eq!(results[0].original, "name:\n bad-name");
+        assert_eq!(results[0].fixed, "name:\n good-name");
+        assert!(results[0].has_changes());
+    }
+
+    #[test]
+    fn test_apply_fixes_with_mock_fs_crlf_no_actual_changes() {
+        // A CRLF file where the only applicable fix leaves content unchanged after normalization
+        // should not appear in FixResult. This exercises the normalization code path
+        // (the file IS read and normalize_line_endings IS called) via a fix that produces
+        // no net change on the normalized content.
+        use crate::fs::{FileSystem, MockFileSystem};
+
+        let mock_fs = Arc::new(MockFileSystem::new());
+        // CRLF file: after normalization "name:\n good-name" - fix replaces "good-name" with itself
+        mock_fs.add_file("/project/skill.md", "name:\r\n good-name");
+
+        let fs_clone: Arc<dyn FileSystem> = Arc::clone(&mock_fs) as Arc<dyn FileSystem>;
+
+        let diagnostics = vec![make_diagnostic(
+            "/project/skill.md",
+            // Replace "good-name" (bytes 7..16 in normalized "name:\n good-name") with the same text
+            vec![Fix::replace(7, 16, "good-name", "No-op fix", true)],
+        )];
+
+        let results = apply_fixes_with_fs(&diagnostics, false, false, Some(fs_clone)).unwrap();
+
+        // fixed == original because the fix produces no net change: no FixResult emitted
+        assert!(
+            results.is_empty(),
+            "No FixResult should be emitted when fix produces no net change on normalized content"
+        );
+    }
+
+    #[test]
+    fn test_apply_fixes_with_mock_fs_crlf_actual_write() {
+        // Verify the non-dry-run path: apply_fixes_with_fs writes LF-normalized content to disk.
+        use crate::fs::{FileSystem, MockFileSystem};
+
+        let mock_fs = Arc::new(MockFileSystem::new());
+        // File on disk has CRLF endings
+        mock_fs.add_file("/project/skill.md", "name:\r\n bad-name");
+
+        let fs_clone: Arc<dyn FileSystem> = Arc::clone(&mock_fs) as Arc<dyn FileSystem>;
+
+        let diagnostics = vec![make_diagnostic(
+            "/project/skill.md",
+            vec![Fix::replace(7, 15, "good-name", "Fix name", true)],
+        )];
+
+        let results = apply_fixes_with_fs(&diagnostics, false, false, Some(fs_clone)).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].fixed, "name:\n good-name");
+
+        // The written file should contain LF-normalized content
+        let written = mock_fs
+            .read_to_string(std::path::Path::new("/project/skill.md"))
+            .unwrap();
+        assert!(
+            !written.contains('\r'),
+            "Written file should have no \\r (LF-normalized)"
+        );
+        assert_eq!(written, "name:\n good-name");
     }
 
     #[test]
