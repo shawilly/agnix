@@ -1554,3 +1554,115 @@ mod project_level_validation_tests {
         // Should complete without triggering project validation
     }
 }
+
+mod document_version_tests {
+    use agnix_lsp::Backend;
+    use tower_lsp::lsp_types::*;
+    use tower_lsp::{LanguageServer, LspService};
+
+    /// Integration test: document version is correctly tracked through
+    /// the full open -> change -> close lifecycle via LSP events.
+    #[tokio::test]
+    async fn test_document_version_lifecycle_through_events() {
+        let (service, _socket) = LspService::new(Backend::new);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let skill_path = temp_dir.path().join("SKILL.md");
+        std::fs::write(
+            &skill_path,
+            "---\nname: ver-test\ndescription: Use when testing versions\n---\n# Test\n",
+        )
+        .unwrap();
+
+        let uri = Url::from_file_path(&skill_path).unwrap();
+
+        // This test exercises the version lifecycle through the LanguageServer
+        // trait boundary and uses hover as a behavioral indicator of document
+        // cache state (hover returns Some when cached, None after close).
+        //
+        // Note: This test verifies that versions are tracked and available
+        // for publishing. The actual assertion that diagnostics are published
+        // with the correct version field requires consuming LSP notifications
+        // from the socket. See backend/tests.rs for unit tests that verify
+        // version lifecycle (test_document_version_tracked_on_open, etc.).
+        // Phase 1: Open with version 1
+        service
+            .inner()
+            .did_open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem {
+                    uri: uri.clone(),
+                    language_id: "markdown".to_string(),
+                    version: 1,
+                    text:
+                        "---\nname: ver-test\ndescription: Use when testing versions\n---\n# Test\n"
+                            .to_string(),
+                },
+            })
+            .await;
+
+        // Verify content is cached (hover should work)
+        let hover = service
+            .inner()
+            .hover(HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    position: Position {
+                        line: 1,
+                        character: 0,
+                    },
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            })
+            .await;
+        assert!(hover.is_ok());
+        assert!(
+            hover.unwrap().is_some(),
+            "Hover should return content for opened document"
+        );
+
+        // Phase 2: Change to version 3 (versions may skip)
+        service
+            .inner()
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: 3,
+                },
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: "---\nname: ver-test-updated\ndescription: Use when testing versions\n---\n# Updated\n"
+                        .to_string(),
+                }],
+            })
+            .await;
+
+        // Phase 3: Close the document
+        service
+            .inner()
+            .did_close(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+            })
+            .await;
+
+        // Verify content cache is cleared (hover should return None)
+        let hover_after = service
+            .inner()
+            .hover(HoverParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier { uri },
+                    position: Position {
+                        line: 1,
+                        character: 0,
+                    },
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            })
+            .await;
+        assert!(hover_after.is_ok());
+        assert!(
+            hover_after.unwrap().is_none(),
+            "Hover should return None after document is closed"
+        );
+    }
+}

@@ -4,6 +4,7 @@ use super::*;
 
 impl Backend {
     pub(crate) async fn handle_did_open(&self, params: DidOpenTextDocumentParams) {
+        let version = params.text_document.version;
         let uri = params.text_document.uri;
         // Normalize CRLF so the cached content matches the LF-relative byte offsets
         // produced by validate_content and used by code actions for fix ranges.
@@ -13,14 +14,21 @@ impl Backend {
             std::borrow::Cow::Borrowed(_) => raw,
             std::borrow::Cow::Owned(normalized) => normalized,
         };
+        // Acquire both locks atomically to update content and version together.
+        // Readers that need both values must capture them in a single operation
+        // (see validate_from_content_and_publish).
         {
             let mut docs = self.documents.write().await;
+            let mut versions = self.document_versions.write().await;
             docs.insert(uri.clone(), Arc::new(text));
+            versions.insert(uri.clone(), version);
+            // Both guards dropped here in reverse acquisition order (versions then docs)
         }
         self.validate_from_content_and_publish(uri, None).await;
     }
 
     pub(crate) async fn handle_did_change(&self, params: DidChangeTextDocumentParams) {
+        let version = params.text_document.version;
         let uri = params.text_document.uri;
         if let Some(change) = params.content_changes.into_iter().next() {
             // Normalize CRLF so the cached content matches the LF-relative byte offsets
@@ -31,11 +39,21 @@ impl Backend {
                 std::borrow::Cow::Borrowed(_) => raw,
                 std::borrow::Cow::Owned(normalized) => normalized,
             };
+            // Acquire both locks atomically to update content and version together.
+            // Readers that need both values must capture them in a single operation
+            // (see validate_from_content_and_publish).
             {
                 let mut docs = self.documents.write().await;
+                let mut versions = self.document_versions.write().await;
                 docs.insert(uri.clone(), Arc::new(text));
+                versions.insert(uri.clone(), version);
+                // Both guards dropped here in reverse acquisition order (versions then docs)
             }
             self.validate_from_content_and_publish(uri, None).await;
+        } else {
+            // Even when content_changes is empty, the version from
+            // VersionedTextDocumentIdentifier is authoritative per LSP spec.
+            self.document_versions.write().await.insert(uri, version);
         }
     }
 
@@ -53,12 +71,14 @@ impl Backend {
     }
 
     pub(crate) async fn handle_did_close(&self, params: DidCloseTextDocumentParams) {
+        let uri = params.text_document.uri;
         {
             let mut docs = self.documents.write().await;
-            docs.remove(&params.text_document.uri);
+            docs.remove(&uri);
         }
-        self.client
-            .publish_diagnostics(params.text_document.uri, vec![], None)
-            .await;
+        self.document_versions.write().await.remove(&uri);
+        // Clearing diagnostics for a closed document - version is intentionally None
+        // since the document is no longer tracked.
+        self.client.publish_diagnostics(uri, vec![], None).await;
     }
 }

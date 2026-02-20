@@ -53,6 +53,9 @@ pub struct Backend {
     /// Canonicalized workspace root cached at initialize() to avoid blocking I/O on hot paths.
     pub(crate) workspace_root_canonical: Arc<RwLock<Option<PathBuf>>>,
     pub(crate) documents: Arc<RwLock<HashMap<Url, Arc<String>>>>,
+    /// Tracks the latest document version from the client (did_open / did_change).
+    /// Used to tag published diagnostics with the version they were computed against.
+    pub(crate) document_versions: Arc<RwLock<HashMap<Url, i32>>>,
     /// Monotonic generation incremented on each config change.
     /// Used to drop stale diagnostics from older revalidation batches.
     pub(crate) config_generation: Arc<AtomicU64>,
@@ -78,6 +81,7 @@ impl Backend {
             workspace_root: Arc::new(RwLock::new(None)),
             workspace_root_canonical: Arc::new(RwLock::new(None)),
             documents: Arc::new(RwLock::new(HashMap::new())),
+            document_versions: Arc::new(RwLock::new(HashMap::new())),
             config_generation: Arc::new(AtomicU64::new(0)),
             project_validation_generation: Arc::new(AtomicU64::new(0)),
             registry: Arc::new(agnix_core::ValidatorRegistry::with_defaults()),
@@ -188,19 +192,23 @@ impl Backend {
             let config = self.config.load();
             let file_type = agnix_core::resolve_file_type(&file_path, &config);
             if file_type.is_generic() {
+                // Read version just-in-time to minimize TOCTOU window
+                let version = self.get_document_version(&uri).await;
                 // Publish empty diagnostics to clear any stale results
-                self.client.publish_diagnostics(uri, vec![], None).await;
+                self.client.publish_diagnostics(uri, vec![], version).await;
                 return;
             }
         }
 
-        // Get content from cache
-        let (content, expected_content) = {
+        // Get content from cache and capture version at same time to avoid TOCTOU
+        // between content validation and version publish
+        let (content, expected_content, captured_version) = {
             let docs = self.documents.read().await;
             match docs.get(&uri) {
                 Some(cached) => {
                     let snapshot = Arc::clone(cached);
-                    (Arc::clone(&snapshot), Some(snapshot))
+                    let version = self.get_document_version(&uri).await;
+                    (Arc::clone(&snapshot), Some(snapshot), version)
                 }
                 None => {
                     // Fall back to file-based validation
@@ -212,8 +220,10 @@ impl Backend {
                     {
                         return;
                     }
+                    // Read version just-in-time to minimize TOCTOU window
+                    let version = self.get_document_version(&uri).await;
                     self.client
-                        .publish_diagnostics(uri, diagnostics, None)
+                        .publish_diagnostics(uri, diagnostics, version)
                         .await;
                     return;
                 }
@@ -259,8 +269,11 @@ impl Backend {
             return;
         }
 
+        // Use version captured at time of content snapshot to avoid publishing
+        // newer version with older (already-validated) diagnostics
+        let version = captured_version;
         self.client
-            .publish_diagnostics(uri, diagnostics, None)
+            .publish_diagnostics(uri, diagnostics, version)
             .await;
     }
 }
