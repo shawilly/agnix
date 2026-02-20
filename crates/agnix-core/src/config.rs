@@ -134,7 +134,11 @@ pub struct FilesConfig {
 ///
 /// These are hard errors (not warnings) that indicate the configuration
 /// cannot be used as-is. For soft issues, see [`ConfigWarning`].
+///
+/// This enum is `#[non_exhaustive]`: match with a wildcard arm to handle
+/// future variants without breaking changes.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// A glob pattern in the configuration is syntactically invalid.
     InvalidGlobPattern {
@@ -146,6 +150,11 @@ pub enum ConfigError {
     /// A glob pattern attempts path traversal (e.g. `../escape`).
     PathTraversal {
         /// The pattern containing path traversal.
+        pattern: String,
+    },
+    /// A glob pattern uses an absolute path (e.g. `/etc/passwd` or `C:/Windows/**`).
+    AbsolutePathPattern {
+        /// The absolute-path pattern.
         pattern: String,
     },
     /// Validation produced warnings that were promoted to errors.
@@ -160,6 +169,13 @@ impl std::fmt::Display for ConfigError {
             }
             ConfigError::PathTraversal { pattern } => {
                 write!(f, "path traversal in pattern '{}'", pattern)
+            }
+            ConfigError::AbsolutePathPattern { pattern } => {
+                write!(
+                    f,
+                    "absolute path in pattern '{}': use relative paths only",
+                    pattern
+                )
             }
             ConfigError::ValidationFailed(warnings) => {
                 if warnings.is_empty() {

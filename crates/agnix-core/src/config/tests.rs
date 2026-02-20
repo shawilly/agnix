@@ -2896,6 +2896,54 @@ fn test_builder_path_traversal_returns_error() {
 }
 
 #[test]
+fn test_build_lenient_rejects_absolute_path_pattern() {
+    let result = LintConfig::builder()
+        .exclude(vec!["/etc/passwd".to_string()])
+        .build_lenient();
+    match result.unwrap_err() {
+        ConfigError::AbsolutePathPattern { pattern } => {
+            assert_eq!(pattern, "/etc/passwd");
+        }
+        other => panic!("Expected AbsolutePathPattern, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_build_lenient_rejects_invalid_glob_in_files_config() {
+    let files = FilesConfig {
+        include_as_memory: vec!["[invalid-in-memory".to_string()],
+        ..FilesConfig::default()
+    };
+    let result = LintConfig::builder().files(files).build_lenient();
+    match result.unwrap_err() {
+        ConfigError::InvalidGlobPattern { pattern, error } => {
+            assert_eq!(pattern, "[invalid-in-memory");
+            assert!(
+                error.contains("files.include_as_memory"),
+                "error should name the field: {}",
+                error
+            );
+        }
+        other => panic!("Expected InvalidGlobPattern, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_build_lenient_rejects_path_traversal_in_files_config() {
+    let files = FilesConfig {
+        exclude: vec!["../../../escape/**".to_string()],
+        ..FilesConfig::default()
+    };
+    let result = LintConfig::builder().files(files).build_lenient();
+    match result.unwrap_err() {
+        ConfigError::PathTraversal { pattern } => {
+            assert_eq!(pattern, "../../../escape/**");
+        }
+        other => panic!("Expected PathTraversal, got: {:?}", other),
+    }
+}
+
+#[test]
 fn test_builder_disable_rule() {
     let config = LintConfig::builder()
         .disable_rule("AS-001")
@@ -3119,6 +3167,13 @@ fn test_config_error_display() {
     let msg = err.to_string();
     assert!(msg.contains("../etc/passwd"));
 
+    let err = ConfigError::AbsolutePathPattern {
+        pattern: "/etc/passwd".to_string(),
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("/etc/passwd"));
+    assert!(msg.contains("relative"));
+
     let warnings = vec![ConfigWarning {
         field: "test".to_string(),
         message: "bad config".to_string(),
@@ -3137,7 +3192,8 @@ fn test_builder_tool_versions() {
     };
     let config = LintConfig::builder()
         .tool_versions(tv.clone())
-        .build_unchecked();
+        .build()
+        .unwrap();
     assert_eq!(config.tool_versions().claude_code, tv.claude_code);
 }
 
@@ -3149,7 +3205,8 @@ fn test_builder_spec_revisions() {
     };
     let config = LintConfig::builder()
         .spec_revisions(sr.clone())
-        .build_unchecked();
+        .build()
+        .unwrap();
     assert_eq!(config.spec_revisions().mcp_protocol, sr.mcp_protocol);
 }
 
@@ -3159,7 +3216,7 @@ fn test_builder_rules() {
     rules.skills = false;
     rules.hooks = false;
     rules.amp_checks = false;
-    let config = LintConfig::builder().rules(rules).build_unchecked();
+    let config = LintConfig::builder().rules(rules).build().unwrap();
     assert!(!config.rules().skills);
     assert!(!config.rules().hooks);
     assert!(!config.rules().amp_checks);
@@ -3168,7 +3225,7 @@ fn test_builder_rules() {
 #[test]
 fn test_builder_import_cache() {
     let cache = crate::parsers::ImportCache::default();
-    let config = LintConfig::builder().import_cache(cache).build_unchecked();
+    let config = LintConfig::builder().import_cache(cache).build().unwrap();
     assert!(config.import_cache().is_some());
 }
 
@@ -3176,7 +3233,7 @@ fn test_builder_import_cache() {
 fn test_builder_fs() {
     use crate::fs::MockFileSystem;
     let fs = Arc::new(MockFileSystem::new());
-    let config = LintConfig::builder().fs(fs).build_unchecked();
+    let config = LintConfig::builder().fs(fs).build().unwrap();
     // Verify fs was set (we can't directly compare Arc<dyn FileSystem>,
     // but if it compiled and didn't panic, the builder method works)
     let _ = config.fs();
@@ -3274,7 +3331,7 @@ fn test_builder_reuse_after_build() {
 
 #[test]
 fn test_builder_empty_exclude() {
-    let config = LintConfig::builder().exclude(vec![]).build_unchecked();
+    let config = LintConfig::builder().exclude(vec![]).build().unwrap();
     assert!(config.exclude().is_empty());
 }
 
@@ -3299,10 +3356,11 @@ fn test_path_traversal_edge_cases() {
     assert!(matches!(result, Err(ConfigError::PathTraversal { .. })));
 
     // "..foo" is NOT path traversal (just a name starting with ..)
-    let result = LintConfig::builder()
+    let config = LintConfig::builder()
         .exclude(vec!["..foo".to_string()])
-        .build_unchecked();
-    assert_eq!(result.exclude(), &["..foo".to_string()]);
+        .build()
+        .unwrap();
+    assert_eq!(config.exclude(), &["..foo".to_string()]);
 }
 
 // ===== Arc<ConfigData> Sharing Tests =====
@@ -3434,4 +3492,113 @@ target = "ClaudeCode"
     // But their content should be equal
     assert_eq!(config1.severity(), config2.severity());
     assert_eq!(config1.target(), config2.target());
+}
+
+// ===== build_lenient() Tests =====
+//
+// build_lenient() runs security-critical validation (glob syntax, path
+// traversal) while skipping semantic warnings (unknown tools, deprecated
+// fields, unknown rule prefixes). These tests verify both sides.
+
+#[test]
+fn test_build_lenient_allows_unknown_tools() {
+    // build() rejects unknown tool names; build_lenient() should accept them
+    let result_strict = LintConfig::builder()
+        .tools(vec!["future-unknown-tool".to_string()])
+        .build();
+    assert!(result_strict.is_err(), "build() should reject unknown tool");
+
+    let config = LintConfig::builder()
+        .tools(vec!["future-unknown-tool".to_string()])
+        .build_lenient()
+        .expect("build_lenient() should accept unknown tools");
+    assert_eq!(config.tools(), &["future-unknown-tool"]);
+}
+
+#[test]
+fn test_build_lenient_allows_deprecated_target() {
+    // build() rejects deprecated target field; build_lenient() should accept it
+    let result_strict = LintConfig::builder().target(TargetTool::ClaudeCode).build();
+    assert!(
+        result_strict.is_err(),
+        "build() should reject deprecated target"
+    );
+
+    let config = LintConfig::builder()
+        .target(TargetTool::ClaudeCode)
+        .build_lenient()
+        .expect("build_lenient() should accept deprecated target");
+    assert_eq!(config.target(), TargetTool::ClaudeCode);
+}
+
+#[test]
+fn test_build_lenient_allows_deprecated_mcp_version() {
+    // build() rejects deprecated mcp_protocol_version; build_lenient() should accept it
+    let result_strict = LintConfig::builder()
+        .mcp_protocol_version(Some("2024-11-05".to_string()))
+        .build();
+    assert!(
+        result_strict.is_err(),
+        "build() should reject deprecated mcp_protocol_version"
+    );
+
+    let config = LintConfig::builder()
+        .mcp_protocol_version(Some("2024-11-05".to_string()))
+        .build_lenient()
+        .expect("build_lenient() should accept deprecated mcp_protocol_version");
+    assert_eq!(config.mcp_protocol_version_raw(), Some("2024-11-05"));
+}
+
+#[test]
+fn test_build_lenient_allows_unknown_rule_prefixes() {
+    // build() rejects unknown rule prefixes; build_lenient() should accept them
+    let result_strict = LintConfig::builder().disable_rule("FAKE-001").build();
+    assert!(
+        result_strict.is_err(),
+        "build() should reject unknown rule prefix"
+    );
+
+    let config = LintConfig::builder()
+        .disable_rule("FAKE-001")
+        .build_lenient()
+        .expect("build_lenient() should accept unknown rule prefixes");
+    assert!(
+        config
+            .rules()
+            .disabled_rules
+            .contains(&"FAKE-001".to_string())
+    );
+}
+
+#[test]
+fn test_build_lenient_rejects_invalid_glob() {
+    let result = LintConfig::builder()
+        .exclude(vec!["[invalid".to_string()])
+        .build_lenient();
+
+    match result.unwrap_err() {
+        ConfigError::InvalidGlobPattern { pattern, error } => {
+            assert_eq!(pattern, "[invalid");
+            assert!(
+                error.contains("exclude"),
+                "error should name the field: {}",
+                error
+            );
+        }
+        other => panic!("Expected InvalidGlobPattern, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_build_lenient_rejects_path_traversal() {
+    let result = LintConfig::builder()
+        .exclude(vec!["../secret/**".to_string()])
+        .build_lenient();
+
+    match result.unwrap_err() {
+        ConfigError::PathTraversal { pattern } => {
+            assert_eq!(pattern, "../secret/**");
+        }
+        other => panic!("Expected PathTraversal, got: {:?}", other),
+    }
 }
