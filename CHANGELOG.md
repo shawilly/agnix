@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **XP-008 rule**: New MEDIUM-severity cross-platform rule that warns when CLAUDE.md contains Claude-specific directives (context:fork, agent fields, allowed-tools, hooks, @import) outside a guarded `## Claude Code` section, helping users targeting Cursor avoid silently-ignored configuration
+
 ## [0.12.4] - 2026-02-21
 
 ### Security
@@ -593,7 +596,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Quick-fix code actions from Fix objects
   - Hover documentation for frontmatter fields
   - Document content caching for performance
-  - Supports all 229 agnix validation rules with severity mapping
+  - Supports all 230 agnix validation rules with severity mapping
 
   - Workspace boundary validation for security (prevents path traversal)
   - Config caching optimization for performance
@@ -609,7 +612,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Case-insensitive tool name matching
   - Takes precedence over legacy `target` field for flexibility
 - VS Code extension with full LSP integration (#22)
-  - Real-time diagnostics for all 229 validation rules
+  - Real-time diagnostics for all 230 validation rules
 
   - Status bar indicator showing agnix validation status
   - Syntax highlighting for SKILL.md YAML frontmatter
