@@ -423,6 +423,45 @@ fn validation_result_fields_are_accessible() {
     assert_eq!(result.files_checked, 5);
 }
 
+#[test]
+fn validation_result_implements_required_traits() {
+    assert_clone::<agnix_core::ValidationResult>();
+    assert_debug::<agnix_core::ValidationResult>();
+}
+
+#[test]
+fn validation_result_allows_struct_literal_construction() {
+    // Guard: this integration test is an external crate, so struct literal construction would
+    // fail to compile if #[non_exhaustive] is re-added. Adding a new field to ValidationResult
+    // would also break this test.
+    let result = agnix_core::ValidationResult {
+        diagnostics: vec![],
+        files_checked: 42,
+        validation_time_ms: Some(100),
+        validator_factories_registered: 5,
+    };
+    assert_eq!(result.files_checked, 42);
+    assert_eq!(result.validation_time_ms, Some(100));
+    assert_eq!(result.validator_factories_registered, 5);
+    assert!(result.diagnostics.is_empty());
+}
+
+#[test]
+fn validation_result_allows_exhaustive_destructuring() {
+    // Guard: exhaustive destructuring (no `..`) is forbidden for #[non_exhaustive] types
+    // in external crates. This test fails to compile if #[non_exhaustive] is re-added.
+    let result = agnix_core::ValidationResult::new(vec![], 3).with_timing(10);
+    let agnix_core::ValidationResult {
+        diagnostics,
+        files_checked,
+        validation_time_ms,
+        validator_factories_registered,
+    } = result;
+    assert_eq!(files_checked, 3);
+    assert_eq!(validation_time_ms, Some(10));
+    let _ = (diagnostics, validator_factories_registered);
+}
+
 // ============================================================================
 // FixResult field accessibility
 // ============================================================================
