@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Unified design system**: Import shared design tokens from agent-sh/design-system. Switch from Outfit to Inter font. Add font preconnect hints to Docusaurus config. Keeps teal accent and light/dark mode.
+
 ## [0.13.0] - 2026-02-21
 
 ### Added
