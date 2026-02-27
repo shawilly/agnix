@@ -246,9 +246,37 @@ jobs:
           SCRIPT
           chmod +x /tmp/wait-for-crate.sh
 
+      - name: Create idempotent publish helper
+        run: |
+          set -euo pipefail
+          cat > /tmp/publish-crate.sh << 'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [ $# -ne 2 ]; then
+            echo "Usage: $0 <crate> <version>" >&2
+            exit 1
+          fi
+          crate="$1"
+          version="$2"
+          echo "Publishing $crate $version..."
+          if cargo publish -p "$crate" 2>&1; then
+            echo "$crate $version published successfully"
+          else
+            # Check if version already exists on crates.io (handles re-runs after partial failures)
+            status=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/$crate/$version")
+            if [ "$status" = "200" ]; then
+              echo "$crate $version already published, skipping"
+            else
+              echo "Publish failed and $crate $version not found on crates.io (HTTP $status)"
+              exit 1
+            fi
+          fi
+          SCRIPT
+          chmod +x /tmp/publish-crate.sh
+
       # Publish order: agnix-rules (leaf) -> agnix-core -> agnix-cli/agnix-lsp/agnix-mcp
       - name: Publish agnix-rules
-        run: cargo publish -p agnix-rules
+        run: /tmp/publish-crate.sh agnix-rules ${{ steps.version.outputs.version }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -256,7 +284,7 @@ jobs:
         run: /tmp/wait-for-crate.sh agnix-rules ${{ steps.version.outputs.version }}
 
       - name: Publish agnix-core
-        run: cargo publish -p agnix-core
+        run: /tmp/publish-crate.sh agnix-core ${{ steps.version.outputs.version }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -264,17 +292,17 @@ jobs:
         run: /tmp/wait-for-crate.sh agnix-core ${{ steps.version.outputs.version }}
 
       - name: Publish agnix-cli
-        run: cargo publish -p agnix-cli
+        run: /tmp/publish-crate.sh agnix-cli ${{ steps.version.outputs.version }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Publish agnix-lsp
-        run: cargo publish -p agnix-lsp
+        run: /tmp/publish-crate.sh agnix-lsp ${{ steps.version.outputs.version }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Publish agnix-mcp
-        run: cargo publish -p agnix-mcp
+        run: /tmp/publish-crate.sh agnix-mcp ${{ steps.version.outputs.version }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -444,6 +472,8 @@ jobs:
         run: npm --prefix website run version:cut -- "${{ steps.version.outputs.version }}"
 
       - name: Commit and push versioned docs
+        env:
+          GH_TOKEN: ${{ secrets.COMMITTER_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -452,6 +482,29 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
+            BRANCH="docs/version-${{ steps.version.outputs.version }}"
+            git checkout -B "$BRANCH"
             git commit -m "docs: version ${{ steps.version.outputs.version }} docs and update site data"
-            git push origin main
+            # Force-push to update the auto-generated docs branch on workflow re-runs
+            git push --force-with-lease origin "$BRANCH"
+            # Create PR only if one doesn't already exist for this branch
+            PR_CHECK_ERR="$(mktemp)"
+            if gh pr view --head "$BRANCH" --json number --jq '.number' >/dev/null 2>"$PR_CHECK_ERR"; then
+              echo "PR already exists for $BRANCH, updated with force push"
+            else
+              if grep -qiE 'not[[:space:]]+found|could not find pull request|no pull requests' "$PR_CHECK_ERR"; then
+                gh pr create \
+                  --base main \
+                  --head "$BRANCH" \
+                  --title "docs: version ${{ steps.version.outputs.version }} docs" \
+                  --body "Auto-generated versioned docs snapshot for v${{ steps.version.outputs.version }}, including updated rule docs and site data." \
+                  --label "documentation"
+              else
+                echo "Error checking for existing PR:"
+                cat "$PR_CHECK_ERR"
+                rm -f "$PR_CHECK_ERR"
+                exit 1
+              fi
+            fi
+            rm -f "$PR_CHECK_ERR"
           fi
