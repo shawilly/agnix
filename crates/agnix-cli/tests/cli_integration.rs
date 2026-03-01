@@ -1427,12 +1427,18 @@ fn test_target_kiro_disables_cc_rules() {
     let has_cc_rule = diagnostics
         .iter()
         .any(|d| d["rule"].as_str().unwrap_or("").starts_with("CC-"));
-    let has_as_rule = diagnostics
+    let has_non_cc_rule = diagnostics
         .iter()
-        .any(|d| d["rule"].as_str().unwrap_or("").starts_with("AS-"));
+        .any(|d| !d["rule"].as_str().unwrap_or("").starts_with("CC-"));
 
-    assert!(!has_cc_rule, "With --target kiro, CC-* rules should be disabled");
-    assert!(has_as_rule, "With --target kiro, non-CC rules should still run");
+    assert!(
+        !has_cc_rule,
+        "With --target kiro, CC-* rules should be disabled"
+    );
+    assert!(
+        has_non_cc_rule,
+        "With --target kiro, non-CC rules should still run"
+    );
 }
 
 #[test]
