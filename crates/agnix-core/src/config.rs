@@ -280,7 +280,7 @@ pub(in crate::config) struct ConfigData {
     )]
     exclude: Vec<String>,
 
-    /// Target tool (claude-code, cursor, codex, generic)
+    /// Target tool (claude-code, cursor, codex, kiro, generic)
     /// Deprecated: Use `tools` array instead for multi-tool support
     #[schemars(description = "Target tool for validation (deprecated: use 'tools' array instead)")]
     target: TargetTool,
@@ -288,10 +288,10 @@ pub(in crate::config) struct ConfigData {
     /// Tools to validate for (e.g., ["claude-code", "cursor"])
     /// When specified, agnix automatically enables rules for these tools
     /// and disables rules for tools not in the list.
-    /// Valid values: "claude-code", "cursor", "codex", "copilot", "github-copilot", "cline", "opencode", "gemini-cli", "generic"
+    /// Valid values: "claude-code", "cursor", "codex", "kiro", "copilot", "github-copilot", "cline", "opencode", "gemini-cli", "generic"
     #[serde(default)]
     #[schemars(
-        description = "Tools to validate for. Valid values: \"claude-code\", \"cursor\", \"codex\", \"copilot\", \"github-copilot\", \"cline\", \"opencode\", \"gemini-cli\", \"generic\""
+        description = "Tools to validate for. Valid values: \"claude-code\", \"cursor\", \"codex\", \"kiro\", \"copilot\", \"github-copilot\", \"cline\", \"opencode\", \"gemini-cli\", \"generic\""
     )]
     tools: Vec<String>,
 
@@ -690,6 +690,8 @@ pub enum TargetTool {
     Cursor,
     /// Codex specific
     Codex,
+    /// Kiro specific
+    Kiro,
 }
 
 impl LintConfig {
