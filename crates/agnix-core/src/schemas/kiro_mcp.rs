@@ -1,21 +1,14 @@
 //! Kiro MCP schema helpers.
 //!
 //! Covers `.kiro/settings/mcp.json` and power-local `mcp.json`.
-#![allow(dead_code)]
 
+use crate::schemas::common::{ParseError, parse_json_with_raw};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// JSON parse error with line/column metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseError {
-    pub message: String,
-    pub line: usize,
-    pub column: usize,
-}
-
 /// Parsed Kiro MCP document.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone)]
 pub struct ParsedKiroMcpConfig {
     pub config: Option<KiroMcpConfig>,
@@ -24,6 +17,7 @@ pub struct ParsedKiroMcpConfig {
 }
 
 /// Kiro MCP config file schema.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KiroMcpConfig {
@@ -33,6 +27,7 @@ pub struct KiroMcpConfig {
 }
 
 /// Per-server MCP config in Kiro context.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KiroMcpServerConfig {
@@ -45,23 +40,13 @@ pub struct KiroMcpServerConfig {
 }
 
 /// Parse Kiro MCP JSON into typed schema and raw value.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 pub fn parse_kiro_mcp_config(content: &str) -> ParsedKiroMcpConfig {
-    let raw_value = serde_json::from_str::<Value>(content).ok();
-    match serde_json::from_str::<KiroMcpConfig>(content) {
-        Ok(config) => ParsedKiroMcpConfig {
-            config: Some(config),
-            parse_error: None,
-            raw_value,
-        },
-        Err(err) => ParsedKiroMcpConfig {
-            config: None,
-            parse_error: Some(ParseError {
-                message: err.to_string(),
-                line: err.line(),
-                column: err.column(),
-            }),
-            raw_value,
-        },
+    let (config, parse_error, raw_value) = parse_json_with_raw::<KiroMcpConfig>(content);
+    ParsedKiroMcpConfig {
+        config,
+        parse_error,
+        raw_value,
     }
 }
 

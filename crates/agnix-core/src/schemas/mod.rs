@@ -9,6 +9,7 @@ pub mod claude_md;
 pub mod claude_rules;
 pub mod cline;
 pub mod codex;
+pub mod common;
 pub mod copilot;
 pub mod copilot_agent;
 pub mod copilot_hooks;

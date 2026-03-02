@@ -1,13 +1,14 @@
 //! Kiro IDE hook file schema helpers.
 //!
 //! Covers `.kiro/hooks/*.kiro.hook` JSON payloads.
-#![allow(dead_code)]
 
+use crate::schemas::common::{ParseError, parse_json_with_raw};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
 /// Valid Kiro IDE hook event names.
+#[allow(dead_code)] // schema constant used by downstream validators
 pub const VALID_KIRO_HOOK_EVENTS: &[&str] = &[
     "fileEdited",
     "fileCreate",
@@ -19,15 +20,8 @@ pub const VALID_KIRO_HOOK_EVENTS: &[&str] = &[
     "manual",
 ];
 
-/// JSON parse error with line/column metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseError {
-    pub message: String,
-    pub line: usize,
-    pub column: usize,
-}
-
 /// Parsed Kiro hook document.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone)]
 pub struct ParsedKiroHook {
     pub hook: Option<KiroIdeHook>,
@@ -36,6 +30,7 @@ pub struct ParsedKiroHook {
 }
 
 /// Kiro IDE hook structure.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KiroIdeHook {
@@ -52,6 +47,7 @@ pub struct KiroIdeHook {
 }
 
 /// Optional nested action block used by some hook representations.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KiroHookAction {
@@ -63,7 +59,7 @@ pub struct KiroHookAction {
 
 impl KiroIdeHook {
     /// Resolve an effective command from top-level or nested `then`.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // helper for downstream validators
     pub fn effective_run_command(&self) -> Option<&str> {
         self.run_command
             .as_deref()
@@ -71,7 +67,7 @@ impl KiroIdeHook {
     }
 
     /// Resolve an effective `askAgent` target from top-level or nested `then`.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // helper for downstream validators
     pub fn effective_ask_agent(&self) -> Option<&str> {
         self.ask_agent
             .as_deref()
@@ -79,30 +75,20 @@ impl KiroIdeHook {
     }
 
     /// True if either supported action is configured.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // helper for downstream validators
     pub fn has_action(&self) -> bool {
         self.effective_run_command().is_some() || self.effective_ask_agent().is_some()
     }
 }
 
 /// Parse Kiro IDE hook JSON into typed schema and raw value.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 pub fn parse_kiro_hook(content: &str) -> ParsedKiroHook {
-    let raw_value = serde_json::from_str::<Value>(content).ok();
-    match serde_json::from_str::<KiroIdeHook>(content) {
-        Ok(hook) => ParsedKiroHook {
-            hook: Some(hook),
-            parse_error: None,
-            raw_value,
-        },
-        Err(err) => ParsedKiroHook {
-            hook: None,
-            parse_error: Some(ParseError {
-                message: err.to_string(),
-                line: err.line(),
-                column: err.column(),
-            }),
-            raw_value,
-        },
+    let (hook, parse_error, raw_value) = parse_json_with_raw::<KiroIdeHook>(content);
+    ParsedKiroHook {
+        hook,
+        parse_error,
+        raw_value,
     }
 }
 

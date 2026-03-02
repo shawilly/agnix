@@ -1,14 +1,15 @@
 //! Kiro custom agent JSON schema helpers.
 //!
 //! Covers `.kiro/agents/*.json` payloads and embedded CLI hook structures.
-#![allow(dead_code)]
 
+use crate::schemas::common::{ParseError, parse_json_with_raw};
 use crate::schemas::kiro_mcp::KiroMcpServerConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
 /// Supported model values documented by Kiro.
+#[allow(dead_code)] // schema constant used by downstream validators
 pub const VALID_KIRO_AGENT_MODELS: &[&str] = &[
     "claude-sonnet-4",
     "claude-sonnet4.5",
@@ -18,15 +19,8 @@ pub const VALID_KIRO_AGENT_MODELS: &[&str] = &[
     "Auto",
 ];
 
-/// JSON parse error with location metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseError {
-    pub message: String,
-    pub line: usize,
-    pub column: usize,
-}
-
 /// Parsed Kiro agent document.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone)]
 pub struct ParsedKiroAgentConfig {
     pub config: Option<KiroAgentConfig>,
@@ -35,6 +29,7 @@ pub struct ParsedKiroAgentConfig {
 }
 
 /// Kiro custom agent JSON schema.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KiroAgentConfig {
@@ -57,6 +52,7 @@ pub struct KiroAgentConfig {
 }
 
 /// Resource entries allowed by Kiro agent config.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum KiroAgentResource {
@@ -65,6 +61,7 @@ pub enum KiroAgentResource {
 }
 
 /// `mcpServers` may be inline server map or named server list, depending on source.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum KiroMcpServers {
@@ -73,6 +70,7 @@ pub enum KiroMcpServers {
 }
 
 /// CLI hook mapping in Kiro custom agents.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KiroCliHooks {
@@ -86,6 +84,7 @@ pub struct KiroCliHooks {
 }
 
 /// Individual CLI hook entry.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KiroCliHookEntry {
@@ -99,23 +98,13 @@ pub struct KiroCliHookEntry {
 }
 
 /// Parse Kiro custom-agent JSON into typed schema and raw value.
+#[allow(dead_code)] // schema-level API; consumed by validator layer
 pub fn parse_kiro_agent_config(content: &str) -> ParsedKiroAgentConfig {
-    let raw_value = serde_json::from_str::<Value>(content).ok();
-    match serde_json::from_str::<KiroAgentConfig>(content) {
-        Ok(config) => ParsedKiroAgentConfig {
-            config: Some(config),
-            parse_error: None,
-            raw_value,
-        },
-        Err(err) => ParsedKiroAgentConfig {
-            config: None,
-            parse_error: Some(ParseError {
-                message: err.to_string(),
-                line: err.line(),
-                column: err.column(),
-            }),
-            raw_value,
-        },
+    let (config, parse_error, raw_value) = parse_json_with_raw::<KiroAgentConfig>(content);
+    ParsedKiroAgentConfig {
+        config,
+        parse_error,
+        raw_value,
     }
 }
 
