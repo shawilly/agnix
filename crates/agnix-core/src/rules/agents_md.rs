@@ -20,7 +20,15 @@ use crate::{
 use rust_i18n::t;
 use std::path::Path;
 
-const RULE_IDS: &[&str] = &["AGM-001", "AGM-002", "AGM-003", "AGM-004", "AGM-005"];
+const RULE_IDS: &[&str] = &[
+    "AGM-001",
+    "AGM-002",
+    "AGM-003",
+    "AGM-004",
+    "AGM-005",
+    "OC-AGM-001",
+    "OC-AGM-002",
+];
 
 pub struct AgentsMdValidator;
 
@@ -150,6 +158,42 @@ impl Validator for AgentsMdValidator {
                         platform = feature.platform.as_str()
                     )),
                 );
+            }
+        }
+
+        // OpenCode AGENTS.md Rules
+
+        // OC-AGM-001: Empty AGENTS.md
+        if config.is_rule_enabled("OC-AGM-001") {
+            if content.trim().is_empty() {
+                diagnostics.push(Diagnostic::error(
+                    path.to_path_buf(),
+                    1,
+                    0,
+                    "OC-AGM-001",
+                    "AGENTS.md is empty. OpenCode requires content.".to_string(),
+                ));
+            }
+        }
+
+        // OC-AGM-002: Secrets in AGENTS.md
+        if config.is_rule_enabled("OC-AGM-002") {
+            let secret_patterns = [
+                "sk-ant-", "sk-proj-", "xoxb-", "xoxp-", "AKIA", "AIZA", "ghp_", "gho_",
+            ];
+            for (i, line) in content.lines().enumerate() {
+                for pattern in &secret_patterns {
+                    if line.contains(pattern) {
+                        diagnostics.push(Diagnostic::error(
+                            path.to_path_buf(),
+                            i + 1,
+                            0,
+                            "OC-AGM-002",
+                            "Potential secret found in AGENTS.md".to_string(),
+                        ));
+                        break;
+                    }
+                }
             }
         }
 
@@ -702,5 +746,19 @@ Some content"#;
             "AGM-001 suggestion should mention 'unclosed tags', got: {}",
             suggestion
         );
+    }
+
+    #[test]
+    fn test_oc_agm_001_empty_file() {
+        let content = "";
+        let diagnostics = validate(content);
+        assert!(diagnostics.iter().any(|d| d.rule == "OC-AGM-001"));
+    }
+
+    #[test]
+    fn test_oc_agm_002_secrets() {
+        let content = "Some content\nexport API_KEY=ghp_abc123\nOther stuff";
+        let diagnostics = validate(content);
+        assert!(diagnostics.iter().any(|d| d.rule == "OC-AGM-002"));
     }
 }
