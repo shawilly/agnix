@@ -121,7 +121,7 @@ knowledge-base/
 | Roo Code | 6 | 3 | 3 | 0 | 0 |
 | Windsurf | 4 | 1 | 2 | 1 | 0 |
 | Kiro Steering | 4 | 2 | 2 | 0 | 1 |
-| **TOTAL** | **233** | **136** | **89** | **8** | **97** |
+| **TOTAL** | **233** | **136** | **89** | **8** | **96** |
 
 
 ---
@@ -286,7 +286,7 @@ Standards Covered:     5 (Agent Skills, MCP, Claude Code, Multi-Platform, Prompt
 Sources Consulted:    75+ (specs, docs, research papers, repos)
 Research Agents:       5 (10+ sources each)
 Validation Rules:     233 rules
-Auto-Fixable Rules:   97 rules
+Auto-Fixable Rules:   96 rules
 
 Test Fixtures:        116 files
 Platforms Analyzed:   9 (Claude Code, Codex CLI, OpenCode, Copilot, Cursor, Cline, Roo-Cline, Continue.dev, Aider)

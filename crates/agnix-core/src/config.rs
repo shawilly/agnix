@@ -604,6 +604,11 @@ pub struct RuleConfig {
     #[schemars(description = "Enable Kiro steering validation rules (KIRO-*)")]
     pub kiro_steering: bool,
 
+    /// Enable Kiro agent validation (KR-AG-*)
+    #[serde(default = "default_true")]
+    #[schemars(description = "Enable Kiro agent validation rules (KR-AG-*)")]
+    pub kiro_agents: bool,
+
     /// Enable Amp checks validation (AMP-*)
     #[serde(default = "default_true")]
     #[schemars(description = "Enable Amp checks validation rules (AMP-*)")]
@@ -671,6 +676,7 @@ impl Default for RuleConfig {
             roo_code: true,
             windsurf: true,
             kiro_steering: true,
+            kiro_agents: true,
             amp_checks: true,
             prompt_engineering: true,
             generic_instructions: true,

@@ -2,15 +2,15 @@
 id: kr-ag-007
 title: "KR-AG-007: Kiro Agent Tool Scope Broader Than Referenced Subagent"
 sidebar_label: "KR-AG-007"
-description: "agnix rule KR-AG-007 checks for kiro agent tool scope broader than referenced subagent in kiro-agents files. Severity: MEDIUM. See examples and fix guidance."
-keywords: ["KR-AG-007", "kiro agent tool scope broader than referenced subagent", "kiro-agents", "validation", "agnix", "linter"]
+description: "agnix rule KR-AG-007 checks for kiro agent tool scope broader than referenced subagent in kiro agents files. Severity: MEDIUM. See examples and fix guidance."
+keywords: ["KR-AG-007", "kiro agent tool scope broader than referenced subagent", "kiro agents", "validation", "agnix", "linter"]
 ---
 
 ## Summary
 
 - **Rule ID**: `KR-AG-007`
 - **Severity**: `MEDIUM`
-- **Category**: `kiro-agents`
+- **Category**: `Kiro Agents`
 - **Normative Level**: `SHOULD`
 - **Auto-Fix**: `No`
 - **Verified On**: `2026-03-02`

@@ -168,8 +168,8 @@ This section contains all `233` validation rules generated from `knowledge-base/
 | [KIRO-003](./generated/kiro-003.md) | Invalid fileMatchPattern Glob | MEDIUM | Kiro Steering | No |
 | [KIRO-004](./generated/kiro-004.md) | Empty Kiro Steering File | MEDIUM | Kiro Steering | No |
 | [KR-SK-001](./generated/kr-sk-001.md) | Kiro Skill Uses Unsupported Field | MEDIUM | Kiro Skills | Yes (safe/unsafe) |
-| [KR-AG-006](./generated/kr-ag-006.md) | Kiro Agent References Unknown Subagent | MEDIUM | kiro-agents | No |
-| [KR-AG-007](./generated/kr-ag-007.md) | Kiro Agent Tool Scope Broader Than Referenced Subagent | MEDIUM | kiro-agents | No |
+| [KR-AG-006](./generated/kr-ag-006.md) | Kiro Agent References Unknown Subagent | MEDIUM | Kiro Agents | No |
+| [KR-AG-007](./generated/kr-ag-007.md) | Kiro Agent Tool Scope Broader Than Referenced Subagent | MEDIUM | Kiro Agents | No |
 | [MCP-001](./generated/mcp-001.md) | Invalid JSON-RPC Version | HIGH | MCP | Yes (safe) |
 | [MCP-002](./generated/mcp-002.md) | Missing Required Tool Field | HIGH | MCP | No |
 | [MCP-003](./generated/mcp-003.md) | Invalid JSON Schema | HIGH | MCP | No |

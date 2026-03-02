@@ -2039,7 +2039,7 @@ pub fn validate_skill(path: &Path, content: &str) -> Vec<Diagnostic> {
 | Roo Code Skills | 1 | 0 | 1 | 0 | 1 |
 | Roo Code | 6 | 3 | 3 | 0 | 0 |
 | Version Awareness | 1 | 0 | 0 | 1 | 0 |
-| **TOTAL** | **233** | **136** | **89** | **8** | **97** |
+| **TOTAL** | **233** | **136** | **89** | **8** | **96** |
 
 
 ---

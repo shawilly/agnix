@@ -2,15 +2,15 @@
 id: kr-ag-006
 title: "KR-AG-006: Kiro Agent References Unknown Subagent"
 sidebar_label: "KR-AG-006"
-description: "agnix rule KR-AG-006 checks for kiro agent references unknown subagent in kiro-agents files. Severity: MEDIUM. See examples and fix guidance."
-keywords: ["KR-AG-006", "kiro agent references unknown subagent", "kiro-agents", "validation", "agnix", "linter"]
+description: "agnix rule KR-AG-006 checks for kiro agent references unknown subagent in kiro agents files. Severity: MEDIUM. See examples and fix guidance."
+keywords: ["KR-AG-006", "kiro agent references unknown subagent", "kiro agents", "validation", "agnix", "linter"]
 ---
 
 ## Summary
 
 - **Rule ID**: `KR-AG-006`
 - **Severity**: `MEDIUM`
-- **Category**: `kiro-agents`
+- **Category**: `Kiro Agents`
 - **Normative Level**: `SHOULD`
 - **Auto-Fix**: `No`
 - **Verified On**: `2026-03-02`

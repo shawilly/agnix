@@ -41,26 +41,52 @@ fn mention_regex() -> &'static regex::Regex {
     })
 }
 
-fn extract_agent_mentions(content: &str) -> Vec<AgentMention> {
+fn prompt_field_regex() -> &'static regex::Regex {
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(r#"(?is)"(?P<key>[A-Za-z0-9_]+)"\s*:\s*"(?P<value>(?:\\.|[^"\\])*)""#)
+            .expect("prompt field regex must compile")
+    })
+}
+
+fn is_prompt_field(key: &str) -> bool {
+    let lowered = key.to_ascii_lowercase();
+    lowered == "prompt" || lowered.ends_with("prompt")
+}
+
+fn extract_prompt_agent_mentions(content: &str) -> Vec<AgentMention> {
     let mut seen = HashSet::new();
     let mut mentions = Vec::new();
 
-    for captures in mention_regex().captures_iter(content) {
-        let Some(name_match) = captures.get(2) else {
+    for captures in prompt_field_regex().captures_iter(content) {
+        let Some(key_match) = captures.name("key") else {
             continue;
         };
-
-        let normalized = normalize_agent_name(name_match.as_str());
-        if normalized.is_empty() {
+        if !is_prompt_field(key_match.as_str()) {
             continue;
         }
 
-        // Keep the first occurrence for stable diagnostics.
-        if seen.insert(normalized.clone()) {
-            mentions.push(AgentMention {
-                name: normalized,
-                byte_offset: name_match.start().saturating_sub(1), // include '@'
-            });
+        let Some(value_match) = captures.name("value") else {
+            continue;
+        };
+
+        for mention_captures in mention_regex().captures_iter(value_match.as_str()) {
+            let Some(name_match) = mention_captures.get(2) else {
+                continue;
+            };
+
+            let normalized = normalize_agent_name(name_match.as_str());
+            if normalized.is_empty() {
+                continue;
+            }
+
+            // Keep the first occurrence for stable diagnostics.
+            if seen.insert(normalized.clone()) {
+                mentions.push(AgentMention {
+                    name: normalized,
+                    byte_offset: value_match.start() + name_match.start().saturating_sub(1), // include '@'
+                });
+            }
         }
     }
 
@@ -85,10 +111,9 @@ fn extract_tools(value: &Value) -> HashSet<String> {
         tools
     }
 
-    // Prefer allowedTools as the effective policy surface when present.
-    let allowed = parse_tool_array(value.get("allowedTools"));
-    if !allowed.is_empty() {
-        return allowed;
+    // Presence of allowedTools is authoritative, even when explicitly empty.
+    if value.get("allowedTools").is_some() {
+        return parse_tool_array(value.get("allowedTools"));
     }
 
     parse_tool_array(value.get("tools"))
@@ -96,7 +121,7 @@ fn extract_tools(value: &Value) -> HashSet<String> {
 
 fn line_col_at_offset(content: &str, offset: usize) -> (usize, usize) {
     let mut line = 1usize;
-    let mut col = 0usize;
+    let mut col = 1usize;
 
     for (idx, ch) in content.char_indices() {
         if idx >= offset {
@@ -104,7 +129,7 @@ fn line_col_at_offset(content: &str, offset: usize) -> (usize, usize) {
         }
         if ch == '\n' {
             line += 1;
-            col = 0;
+            col = 1;
         } else {
             col += 1;
         }
@@ -122,10 +147,36 @@ fn find_kiro_agents_dir(path: &Path, config: &LintConfig) -> Option<PathBuf> {
             .parent()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str());
-        if parent_name == Some("agents") && grandparent_name == Some(".kiro") {
-            return Some(parent.to_path_buf());
+        if let (Some(parent_name), Some(grandparent_name)) = (parent_name, grandparent_name) {
+            if parent_name.eq_ignore_ascii_case("agents")
+                && grandparent_name.eq_ignore_ascii_case(".kiro")
+            {
+                return Some(parent.to_path_buf());
+            }
         }
     }
+
+    let find_child_dir_case_insensitive = |parent: &Path, expected: &str| -> Option<PathBuf> {
+        let Ok(entries) = fs.read_dir(parent) else {
+            return None;
+        };
+
+        for entry in entries {
+            if !entry.metadata.is_dir {
+                continue;
+            }
+
+            let Some(name) = entry.path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+
+            if name.eq_ignore_ascii_case(expected) {
+                return Some(entry.path);
+            }
+        }
+
+        None
+    };
 
     let mut current = path.parent();
     let mut depth = 0usize;
@@ -135,9 +186,14 @@ fn find_kiro_agents_dir(path: &Path, config: &LintConfig) -> Option<PathBuf> {
             break;
         }
 
-        let candidate = dir.join(".kiro").join("agents");
-        if fs.is_dir(&candidate) {
-            return Some(candidate);
+        let Some(kiro_dir) = find_child_dir_case_insensitive(dir, ".kiro") else {
+            current = dir.parent();
+            depth += 1;
+            continue;
+        };
+
+        if let Some(agents_dir) = find_child_dir_case_insensitive(&kiro_dir, "agents") {
+            return Some(agents_dir);
         }
 
         current = dir.parent();
@@ -217,14 +273,14 @@ impl Validator for KiroAgentValidator {
             return diagnostics;
         }
 
-        let mentions = extract_agent_mentions(content);
-        if mentions.is_empty() {
-            return diagnostics;
-        }
-
         let Ok(current_agent) = serde_json::from_str::<Value>(content) else {
             return diagnostics;
         };
+
+        let mentions = extract_prompt_agent_mentions(content);
+        if mentions.is_empty() {
+            return diagnostics;
+        }
 
         let current_name = current_agent
             .get("name")
@@ -380,6 +436,55 @@ mod tests {
     }
 
     #[test]
+    fn test_kr_ag_mentions_only_counted_from_prompt_fields() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let agents_dir = temp.path().join(".kiro").join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        let orchestrator = agents_dir.join("orchestrator.json");
+        write_agent(
+            &orchestrator,
+            r#"{
+  "name": "orchestrator",
+  "description": "Contact @missing-agent for docs",
+  "prompt": "Run local checks only"
+}"#,
+        );
+
+        let diagnostics = validate(&orchestrator);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.rule != "KR-AG-006"),
+            "KR-AG-006 should ignore mentions outside prompt fields: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_kr_ag_mentions_detected_in_prompt_suffix_fields() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let agents_dir = temp.path().join(".kiro").join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        let orchestrator = agents_dir.join("orchestrator.json");
+        write_agent(
+            &orchestrator,
+            r#"{
+  "name": "orchestrator",
+  "systemPrompt": "Delegate this to @missing-agent"
+}"#,
+        );
+
+        let diagnostics = validate(&orchestrator);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == "KR-AG-006")
+        );
+    }
+
+    #[test]
     fn test_kr_ag_007_reports_broader_parent_tools() {
         let temp = tempfile::TempDir::new().unwrap();
         let agents_dir = temp.path().join(".kiro").join("agents");
@@ -447,6 +552,83 @@ mod tests {
             "KR-AG-007 should not fire when parent tools are not broader: {:?}",
             diagnostics
         );
+    }
+
+    #[test]
+    fn test_allowed_tools_empty_is_authoritative() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let agents_dir = temp.path().join(".kiro").join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        let orchestrator = agents_dir.join("orchestrator.json");
+        let reviewer = agents_dir.join("reviewer.json");
+
+        write_agent(
+            &orchestrator,
+            r#"{
+  "name": "orchestrator",
+  "allowedTools": [],
+  "tools": ["readFiles", "runShellCommand"],
+  "prompt": "Use @reviewer for checks"
+}"#,
+        );
+        write_agent(
+            &reviewer,
+            r#"{
+  "name": "reviewer",
+  "tools": ["readFiles"]
+}"#,
+        );
+
+        let diagnostics = validate(&orchestrator);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.rule != "KR-AG-007"),
+            "KR-AG-007 should not fall back to tools when allowedTools is present: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_case_insensitive_kiro_agents_directory_discovery() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let agents_dir = temp.path().join(".KIRO").join("AGENTS");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        let orchestrator = agents_dir.join("orchestrator.json");
+        let reviewer = agents_dir.join("reviewer.json");
+
+        write_agent(
+            &orchestrator,
+            r#"{
+  "name": "orchestrator",
+  "allowedTools": ["readFiles", "runShellCommand"],
+  "prompt": "Use @reviewer for checks"
+}"#,
+        );
+        write_agent(
+            &reviewer,
+            r#"{
+  "name": "reviewer",
+  "allowedTools": ["readFiles"]
+}"#,
+        );
+
+        let diagnostics = validate(&orchestrator);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == "KR-AG-007"),
+            "Expected KR-AG-007 when using case-variant .kiro/agents path: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_line_col_at_offset_is_one_based() {
+        assert_eq!(line_col_at_offset("@agent", 0), (1, 1));
+        assert_eq!(line_col_at_offset("x\n@agent", 2), (2, 1));
     }
 
     #[test]
