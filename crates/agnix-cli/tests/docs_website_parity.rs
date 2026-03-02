@@ -437,3 +437,16 @@ fn readme_supported_tools_kiro_row_matches_current_rules_surface() {
         "Kiro row file surface must document steering and per-client skill paths"
     );
 }
+
+#[test]
+fn readme_rules_link_avoids_hardcoded_total_count() {
+    let root = workspace_root();
+    let readme_path = root.join("README.md");
+    let readme = fs::read_to_string(&readme_path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", readme_path.display(), e));
+
+    assert!(
+        readme.contains("[Full rules reference](https://agent-sh.github.io/agnix/docs/rules)"),
+        "README.md should link to rules docs without a hardcoded total count"
+    );
+}

@@ -108,7 +108,7 @@ agnix --target claude-code .  # Legacy target preset (primarily affects CC-* rul
 agnix --target kiro .         # Legacy target preset (use tools = [...] for tool-only filtering)
 ```
 
-[Full CLI reference](https://agent-sh.github.io/agnix/docs/configuration) | [All 231 rules](https://agent-sh.github.io/agnix/docs/rules)
+[Full CLI reference](https://agent-sh.github.io/agnix/docs/configuration) | [Full rules reference](https://agent-sh.github.io/agnix/docs/rules)
 
 ## Supported Tools
 
