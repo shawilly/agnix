@@ -66,6 +66,30 @@ fn test_category_disabled_amp_checks() {
 }
 
 #[test]
+fn test_category_disabled_kiro_agents() {
+    let mut config = LintConfig::default();
+    dm(&mut config).rules.kiro_agents = false;
+
+    assert!(!config.is_rule_enabled("KR-AG-006"));
+    assert!(!config.is_rule_enabled("KR-AG-007"));
+
+    // Kiro steering remains independently controlled.
+    assert!(config.is_rule_enabled("KIRO-001"));
+}
+
+#[test]
+fn test_category_disabled_kiro_steering_does_not_disable_kiro_agents() {
+    let mut config = LintConfig::default();
+    dm(&mut config).rules.kiro_steering = false;
+
+    assert!(!config.is_rule_enabled("KIRO-001"));
+    assert!(!config.is_rule_enabled("KIRO-004"));
+
+    // KR-AG rules remain independently controlled.
+    assert!(config.is_rule_enabled("KR-AG-006"));
+}
+
+#[test]
 fn test_category_disabled_hooks() {
     let mut config = LintConfig::default();
     dm(&mut config).rules.hooks = false;
