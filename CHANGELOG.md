@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Kiro docs and tests**: Expanded integration/contract tests for Kiro target paths and updated usage docs to clarify legacy `--target` behavior versus `tools = [...]` filtering.
+- **Kiro authoring parity follow-up**: Kiro agent completions now emit JSON-formatted insert text (quoted values and JSON key syntax) and fixture docs now explicitly clarify that `KiroMcp` detection currently targets `.kiro/settings/mcp.json` only (#612, #613).
 
 ## [0.14.0] - 2026-02-27
 
