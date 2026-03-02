@@ -21,6 +21,7 @@ const MAX_PROJECT_SEARCH_DEPTH: usize = 10;
 #[derive(Debug, Clone)]
 struct AgentInfo {
     tools: HashSet<String>,
+    has_explicit_tool_scope: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +118,19 @@ fn extract_tools(value: &Value) -> HashSet<String> {
     }
 
     parse_tool_array(value.get("tools"))
+}
+
+fn has_explicit_tool_scope(value: &Value) -> bool {
+    value.get("allowedTools").is_some() || value.get("tools").is_some()
+}
+
+fn is_reserved_kiro_agent_filename(filename: &str) -> bool {
+    let lowered = filename.to_ascii_lowercase();
+    matches!(
+        lowered.as_str(),
+        "plugin.json" | "mcp.json" | "settings.json" | "settings.local.json"
+    ) || lowered.starts_with("mcp-")
+        || lowered.ends_with(".mcp.json")
 }
 
 fn line_col_at_offset(content: &str, offset: usize) -> (usize, usize) {
@@ -218,6 +232,13 @@ fn load_agent_index(agents_dir: &Path, config: &LintConfig) -> HashMap<String, A
             continue;
         }
 
+        let Some(filename) = entry.path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if is_reserved_kiro_agent_filename(filename) {
+            continue;
+        }
+
         let is_json = entry
             .path
             .extension()
@@ -248,6 +269,7 @@ fn load_agent_index(agents_dir: &Path, config: &LintConfig) -> HashMap<String, A
         // Keep first observed definition for deterministic conflict handling.
         index.entry(normalized_name).or_insert_with(|| AgentInfo {
             tools: extract_tools(&value),
+            has_explicit_tool_scope: has_explicit_tool_scope(&value),
         });
     }
 
@@ -326,7 +348,10 @@ impl Validator for KiroAgentValidator {
                 continue;
             };
 
-            if !check_tool_scope || current_tools.is_empty() || referenced_agent.tools.is_empty() {
+            if !check_tool_scope || current_tools.is_empty() {
+                continue;
+            }
+            if !referenced_agent.has_explicit_tool_scope {
                 continue;
             }
 
@@ -431,6 +456,40 @@ mod tests {
                 .iter()
                 .all(|diagnostic| diagnostic.rule != "KR-AG-006"),
             "KR-AG-006 should not fire when subagent exists: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_reserved_kiro_json_files_are_not_indexed_as_subagents() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let agents_dir = temp.path().join(".kiro").join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        let orchestrator = agents_dir.join("orchestrator.json");
+        let plugin = agents_dir.join("plugin.json");
+
+        write_agent(
+            &orchestrator,
+            r#"{
+  "name": "orchestrator",
+  "prompt": "Delegate this to @plugin"
+}"#,
+        );
+        write_agent(
+            &plugin,
+            r#"{
+  "name": "plugin",
+  "tools": ["readFiles"]
+}"#,
+        );
+
+        let diagnostics = validate(&orchestrator);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == "KR-AG-006"),
+            "Reserved files should not be indexed as subagents: {:?}",
             diagnostics
         );
     }
@@ -550,6 +609,75 @@ mod tests {
                 .iter()
                 .all(|diagnostic| diagnostic.rule != "KR-AG-007"),
             "KR-AG-007 should not fire when parent tools are not broader: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_kr_ag_007_reports_when_referenced_scope_is_explicitly_empty() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let agents_dir = temp.path().join(".kiro").join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        let orchestrator = agents_dir.join("orchestrator.json");
+        let reviewer = agents_dir.join("reviewer.json");
+
+        write_agent(
+            &orchestrator,
+            r#"{
+  "name": "orchestrator",
+  "allowedTools": ["readFiles"],
+  "prompt": "Use @reviewer for checks"
+}"#,
+        );
+        write_agent(
+            &reviewer,
+            r#"{
+  "name": "reviewer",
+  "allowedTools": []
+}"#,
+        );
+
+        let diagnostics = validate(&orchestrator);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == "KR-AG-007"),
+            "Explicitly empty referenced scope should still trigger KR-AG-007: {:?}",
+            diagnostics
+        );
+    }
+
+    #[test]
+    fn test_kr_ag_007_skips_when_referenced_scope_is_missing() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let agents_dir = temp.path().join(".kiro").join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        let orchestrator = agents_dir.join("orchestrator.json");
+        let reviewer = agents_dir.join("reviewer.json");
+
+        write_agent(
+            &orchestrator,
+            r#"{
+  "name": "orchestrator",
+  "allowedTools": ["readFiles"],
+  "prompt": "Use @reviewer for checks"
+}"#,
+        );
+        write_agent(
+            &reviewer,
+            r#"{
+  "name": "reviewer"
+}"#,
+        );
+
+        let diagnostics = validate(&orchestrator);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.rule != "KR-AG-007"),
+            "Missing referenced scope should be treated as unknown and skipped: {:?}",
             diagnostics
         );
     }
